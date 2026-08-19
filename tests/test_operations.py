@@ -1,5 +1,6 @@
 from django.db import DatabaseError, connection
-from django.test import TransactionTestCase, override_settings
+from django.db.migrations.state import ProjectState
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 
 from postgres_objects import Function
 from postgres_objects.operations import AddFunction, AlterFunction, RemoveFunction
@@ -84,6 +85,57 @@ class OperationTestCase(TransactionTestCase):
         with connection.cursor() as cursor:
             cursor.execute('SELECT {}(%s)'.format(db_name), [argument])
             return cursor.fetchone()[0]
+
+
+class DescriptionTestCase(SimpleTestCase):
+    def test_each_operation_describes_itself_by_signature(self):
+        """
+        Case: Ask each operation to describe itself.
+        Expected: The signature pointing to the exact overload.
+        """
+        previous = declare('AllUppercase').definition
+        current = declare('AllUppercase', arguments='input TEXT, suffix TEXT').definition
+
+        self.assertEqual(
+            AddFunction(current).describe(), 'Create function example_alluppercase(input TEXT, suffix TEXT)'
+        )
+        self.assertEqual(
+            AlterFunction(current, previous).describe(), 'Alter function example_alluppercase(input TEXT, suffix TEXT)'
+        )
+        self.assertEqual(RemoveFunction(previous).describe(), 'Remove function example_alluppercase(input TEXT)')
+
+    def test_each_operation_names_a_migration_fragment(self):
+        """
+        Case: Ask each operation for the fragment an auto-generated migration is named after.
+        Expected: The action and the object's name (the filename says what the migration does).
+        """
+        definition = declare('AllUppercase').definition
+
+        self.assertEqual(AddFunction(definition).migration_name_fragment, 'create_function_alluppercase')
+        self.assertEqual(AlterFunction(definition, definition).migration_name_fragment, 'alter_function_alluppercase')
+        self.assertEqual(RemoveFunction(definition).migration_name_fragment, 'remove_function_alluppercase')
+
+    def test_an_operation_reduces_to_sql_and_is_reversible(self):
+        """
+        Case: Inspect the flags Django reads off an operation.
+        Expected: It reports itself as reducing to SQL and reversible, so sqlmigrate renders it and migrate can unapply
+                  it.
+        """
+        operation = AddFunction(declare('AllUppercase').definition)
+
+        self.assertTrue(operation.reduces_to_sql)
+        self.assertTrue(operation.reversible)
+
+    def test_state_forwards_records_nothing(self):
+        """
+        Case: Apply an operation to the migration project state.
+        Expected: The state is untouched, since this kind of object has no representation in it. (What the migrations
+                  created is reconstructed from the graph instead.)
+        """
+        state = ProjectState()
+        AddFunction(declare('AllUppercase').definition).state_forwards(APP_LABEL, state)
+
+        self.assertEqual(list(state.models), [])
 
 
 class AddFunctionTestCase(OperationTestCase):

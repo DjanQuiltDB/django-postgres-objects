@@ -201,6 +201,40 @@ class DefinitionValueTestCase(SimpleTestCase):
         self.assertEqual(path, 'postgres_objects.functions.FunctionDefinition')
         self.assertEqual(FunctionDefinition(*args, **kwargs), definition)
 
+    def test_equal_definitions_hash_equal(self):
+        """
+        Case: Hash the definitions of the same declaration built twice.
+        Expected: Hashable at all, and hashing equal, which is what the hash contract demands of values that compare
+                  equal.
+        """
+        self.assertEqual(hash(declare('Doubled').definition), hash(declare('Doubled').definition))
+
+    def test_a_definition_works_as_a_set_member_and_dict_key(self):
+        """
+        Case: Put a definition in a set and use it as a dict key, then look both up with an equal definition.
+        Expected: Found, so callers can deduplicate and index definitions the way any value object allows.
+        """
+        definition = declare('Doubled').definition
+
+        self.assertIn(declare('Doubled').definition, {definition})
+        self.assertEqual({definition: 'found'}[declare('Doubled').definition], 'found')
+
+    def test_definitions_differing_in_one_field_are_two_set_members(self):
+        """
+        Case: Two definitions differing only in their body, collected into a set.
+        Expected: Two members, since unequal definitions must not collapse into one.
+        """
+        members = {declare('Doubled').definition, declare('Doubled', body='BEGIN END;').definition}
+
+        self.assertEqual(len(members), 2)
+
+    def test_it_reprs_as_its_database_name(self):
+        """
+        Case: Print a definition, as a failing assertion or a debugger would.
+        Expected: The identifier it is created under, which is what identifies it in the database.
+        """
+        self.assertEqual(repr(declare('Doubled').definition), '<FunctionDefinition: example_doubled>')
+
     def test_a_missing_field_is_refused(self):
         """
         Case: Build a definition without all of its fields.

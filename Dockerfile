@@ -11,7 +11,6 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     postgresql-client \
     software-properties-common \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python 3.14 from deadsnakes PPA
@@ -23,19 +22,21 @@ RUN add-apt-repository ppa:deadsnakes/ppa -y && \
     python3.14-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pip for Python 3.14
-# Python 3.14 has PEP 668 protection, so we need --break-system-packages flag
+# Install pip for Python 3.14. It has PEP 668 protection, hence --break-system-packages.
 RUN curl https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
     python3.14 /tmp/get-pip.py --break-system-packages && \
     rm /tmp/get-pip.py
 
 WORKDIR /app
 
-COPY pyproject.toml tox.ini README.rst LICENSE ./
+# Copy the packaging metadata first so the dependency install layer is cached independently of the source.
+COPY pyproject.toml README.rst LICENSE ./
 COPY src ./src
-COPY tests ./tests
 
 RUN python3.14 -m pip install --upgrade pip setuptools wheel && \
     python3.14 -m pip install -e .[dev]
+
+COPY tests ./tests
+COPY docs ./docs
 
 CMD ["tox"]

@@ -8,6 +8,7 @@ services:
       - .:/app:z
       - /app/.ruff_cache
       - /app/.tox
+      - /app/.venv
     command: tox
     depends_on:
       postgres17:

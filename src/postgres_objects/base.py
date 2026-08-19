@@ -22,6 +22,19 @@ from django.db.backends.utils import truncate_name
 MAX_IDENTIFIER_LENGTH = 63
 
 
+def freeze(value):
+    """
+    Make a deconstructed field value hashable: dicts become tuples of their sorted items, lists and tuples become
+    tuples, both applied recursively. Equal values freeze equal, which is what lets a hash be built on the result.
+    """
+    if isinstance(value, dict):
+        return tuple((key, freeze(item)) for key, item in sorted(value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze(item) for item in value)
+
+    return value
+
+
 class Change:
     """
     How to get from one definition of an object to the next.
@@ -62,6 +75,11 @@ class ObjectDefinition:
 
     def __eq__(self, other):
         return type(self) is type(other) and self.deconstruct() == other.deconstruct()
+
+    def __hash__(self):
+        # Built over the same deconstruction __eq__ compares, so equal definitions hash equal.
+        path, args, kwargs = self.deconstruct()
+        return hash((path, freeze(args), freeze(kwargs)))
 
     def __repr__(self):
         return '<{}: {}>'.format(type(self).__name__, self.db_name)

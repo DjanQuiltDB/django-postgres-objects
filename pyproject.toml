@@ -45,7 +45,6 @@ lint = [
     "ruff==0.15.21",
 ]
 test = [
-    "tox==4.12.1",
     "coverage",
     "psycopg[binary]>=3.0.0",
     "dj-database-url",
@@ -56,6 +55,10 @@ docs = [
 dev = [
     "django-postgres-objects[test,lint,docs]",
     "pre-commit",
+    # Native TOML configuration, so that tox.ini is not needed, landed in 4.21.
+    "tox>=4.21",
+    "build",
+    "twine",
 ]
 
 [tool.setuptools.dynamic]
@@ -63,6 +66,79 @@ version = { attr = "postgres_objects.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.tox]
+requires = ["tox>=4.21"]
+env_list = ["py314-dj60-pg17", "py314-dj60-pg18", "py314-dj60-pgtrigger", "ruff", "docs"]
+
+[tool.tox.env_run_base]
+description = "Run the test suite against Postgres named by DATABASE_URL"
+base_python = ["python3.14"]
+package = "editable"
+extras = ["test"]
+deps = ["Django>=6.0,<7.0"]
+change_dir = "tests"
+pass_env = ["DATABASE_URL"]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default" }
+commands = [
+    [
+        "coverage",
+        "run",
+        "--rcfile={tox_root}/pyproject.toml",
+        "manage.py",
+        "test",
+        "--noinput",
+        { replace = "posargs", extend = true, default = [] },
+    ],
+    ["coverage", "report", "--rcfile={tox_root}/pyproject.toml"],
+]
+
+[tool.tox.env.py314-dj60-pg17]
+description = "Run the test suite against PostgreSQL 17"
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres17:5432/test_db}" }
+
+[tool.tox.env.py314-dj60-pg18]
+description = "Run the test suite against PostgreSQL 18"
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres18:5432/test_db}" }
+
+[tool.tox.env.py314-dj60-pgtrigger]
+description = "Check that this package and django-pgtrigger share the migration commands"
+deps = ["Django>=6.0,<7.0", "django-pgtrigger>=4.17,<5"]
+# Once per ordering of the two apps, since which is readied first decides which layers its autodetection on top.
+commands = [
+    ["python", "manage.py", "test", "test_pgtrigger", "--noinput"],
+    ["python", "manage.py", "test", "test_pgtrigger", "--noinput", "--settings=config.settings_pgtrigger_first"],
+]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings_pgtrigger", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres17:5432/test_db}" }
+
+[tool.tox.env.ruff]
+description = "Lint and check formatting"
+skip_install = true
+extras = []
+deps = ["ruff==0.15.21"]
+change_dir = "{tox_root}"
+commands = [
+    ["ruff", "check", "src", "tests", "docs"],
+    ["ruff", "format", "--check", "src", "tests", "docs"],
+]
+
+[tool.tox.env.docs]
+description = "Build the documentation"
+extras = ["docs"]
+deps = ["Django>=6.0,<7.0"]
+change_dir = "{tox_root}"
+commands = [["sphinx-build", "-b", "html", "-W", "docs", "docs/_build/html"]]
+
+[tool.tox.env.build]
+description = "Build the sdist and wheel and check the metadata"
+skip_install = true
+extras = []
+deps = ["build", "twine"]
+change_dir = "{tox_root}"
+commands = [
+    ["python", "-m", "build"],
+    ["twine", "check", "dist/*"],
+]
 
 [tool.coverage.run]
 source = ["postgres_objects"]
