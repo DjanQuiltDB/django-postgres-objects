@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-postgres-objects"
+dynamic = ["version"]
+description = "Declare PostgreSQL functions and other non-table objects as classes, and let makemigrations manage them."
+readme = "README.rst"
+requires-python = ">=3.14"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [
+    { name = "DjanQuiltDB Project", email = "djanquiltdb@portal42.net" },
+]
+keywords = [
+    "django",
+    "database",
+    "postgresql",
+    "migrations",
+    "functions",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Framework :: Django",
+    "Framework :: Django :: 6.0",
+    "Topic :: Database",
+]
+dependencies = [
+    "django>=6.0,<7.0",
+]
+
+[project.urls]
+Source = "https://github.com/djanquiltdb/django-postgres-objects"
+Changelog = "https://github.com/djanquiltdb/django-postgres-objects/blob/master/CHANGELOG.rst"
+
+[project.optional-dependencies]
+lint = [
+    "ruff==0.15.21",
+]
+test = [
+    "tox==4.12.1",
+    "coverage",
+    "psycopg[binary]>=3.0.0",
+    "dj-database-url",
+]
+docs = [
+    "sphinx>=8,<10",
+]
+dev = [
+    "django-postgres-objects[test,lint,docs]",
+    "pre-commit",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "postgres_objects.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.coverage.run]
+source = ["postgres_objects"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = [
+    # isort
+    "I",
+]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+docstring-code-format = true
+skip-magic-trailing-comma = false

@@ -1,0 +1,64 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: postgres-objects-test
+    volumes:
+      - .:/app:z
+      - /app/.ruff_cache
+      - /app/.tox
+    command: tox
+    depends_on:
+      postgres17:
+        condition: service_healthy
+      postgres18:
+        condition: service_healthy
+    networks:
+      - test-network
+
+  postgres17:
+    image: postgres:17
+    container_name: postgres-objects-postgres17
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=test_db
+    ports:
+      - "5443:5432"
+    volumes:
+      - postgres17-data:/var/lib/postgresql/data
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres18:
+    image: postgres:18
+    container_name: postgres-objects-postgres18
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=test_db
+    ports:
+      - "5445:5432"
+    volumes:
+      - postgres18-data:/var/lib/postgresql
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres17-data:
+  postgres18-data:
+
+networks:
+  test-network:
+    driver: bridge
