@@ -663,7 +663,7 @@ class QuerysetViewOperationTestCase(TransactionTestCase):
     def test_reversing_drops_a_compiled_view(self):
         """
         Case: Reverse the AddView of a compiled definition.
-        Expected: Gone, so an unapplied migration leaves nothing behind for either body flavour.
+        Expected: Gone, so an unapplied migration leaves nothing behind for either body flavor.
         """
         declaration = declare('Kinds', queryset=lambda: ContentType.objects.values('id', 'app_label'))
 

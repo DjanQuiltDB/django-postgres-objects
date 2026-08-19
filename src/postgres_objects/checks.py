@@ -63,7 +63,7 @@ def check_view_declarations(app_configs, **kwargs):
     """
     Build every queryset-declared view's definition and model, reporting what (if anything) raises.
 
-    depends_on is resolved for both body flavours, since it is the only thing about a raw-sql declaration that this
+    depends_on is resolved for both body flavors, since it is the only thing about a raw-sql declaration that this
     package can be wrong about, and an entry naming nothing would otherwise surface as a missing ordering rather than as
     a mistake.
     """

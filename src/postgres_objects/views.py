@@ -27,6 +27,10 @@ REFRESH_SQL = 'REFRESH MATERIALIZED VIEW{concurrently} {db_name};'
 def check_refresh(db_name, unique_index, concurrently):
     """
     Refuse a refresh PostgreSQL would refuse, in the one place the migration operation and the runtime call meet.
+
+    Only the half a declaration can know is checked. PostgreSQL also refuses a concurrent refresh of a view never
+    populated, but that is runtime state: reading ``with_data`` for it would wrongly refuse every concurrent refresh
+    after the first fill. That first fill of a ``with_data=False`` view has to be a plain refresh.
     """
     if concurrently and not unique_index:
         raise ValueError(
@@ -213,7 +217,7 @@ class ViewMeta(DeclarativeObjectMeta):
 
     def check_body(cls):
         """
-        Refuse a declaration whose body is missing or said twice, in the one place both flavours meet.
+        Refuse a declaration whose body is missing or said twice, in the one place both flavors meet.
         """
         if cls.abstract:
             raise TypeError('{} is abstract, so it has no definition.'.format(cls.__name__))
@@ -233,7 +237,8 @@ class ViewMeta(DeclarativeObjectMeta):
     @property
     def compiled(cls):
         """
-        The declared queryset, compiled once and kept.
+        The declared queryset, compiled once and kept for the lifetime of the process, by design, so queryset() must
+        return the same SQL every call (see "What is frozen, and when" in the views docs).
 
         Cached on this very class rather than looked up through inheritance, because a subclass is a concrete view of
         its own whose columns must be its own.
@@ -275,7 +280,8 @@ class ViewMeta(DeclarativeObjectMeta):
         """
         A model over this view's columns, for reading it back through the ORM.
 
-        Built when first asked for and kept, so a declaration whose model is never touched costs nothing.
+        Built when first asked for and kept for the lifetime of the process, so a declaration whose model is never
+        touched costs nothing and every read shares one class.
         """
         cls.check_body()
 
@@ -312,7 +318,7 @@ class MaterializedViewMeta(ViewMeta):
         """
         Refuse an index over a column the queryset does not select.
 
-        Only possible for the queryset flavour, whose columns are known here; with raw sql the first word comes from
+        Only possible for the queryset flavor, whose columns are known here; with raw sql the first word comes from
         PostgreSQL at migrate time.
         """
         if not cls.queryset:
@@ -442,12 +448,13 @@ class MaterializedView(View, metaclass=MaterializedViewMeta):
         can be written for: after an import, on a schedule, at the end of a task.
 
         ``concurrently`` keeps the view readable while it refreshes, which PostgreSQL allows only for a view carrying a
-        unique index and populated at least once.
+        unique index and populated at least once, so the first fill of a ``with_data=False`` view must be a plain
+        refresh, and only the fills after it may be concurrent.
 
-        ``using`` names the connection outright, and is handed to ``connections`` untouched — anything that indexes it
+        ``using`` names the connection outright, and is handed to ``connections`` untouched. Anything that indexes it
         works, not only a string alias. Left out, :meth:`db_for_refresh` decides.
 
-        The statement is built from the identifier and the unique index alone — the body is never compiled here, so a
+        The statement is built from the identifier and the unique index alone. The body is never compiled here, so a
         refresh stays cheap on a hot path and works whether or not the declaration still compiles.
         """
         if cls.abstract:

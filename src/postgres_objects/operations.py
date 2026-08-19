@@ -180,7 +180,10 @@ class RefreshMaterializedView(DatabaseObjectOperation):
     responsibility of the project developer creating the MaterializedView to manage this.
 
     CONCURRENTLY keeps the view readable while it refreshes, which PostgreSQL only allows when the view carries a unique
-    index and has been populated at least once.
+    index and has been populated at least once. Only the unique-index half is checked here: whether the view has been
+    filled is runtime state no operation can know, and the ``with_data`` field would wrongly refuse every concurrent
+    refresh after the first fill. The first fill of a ``with_data=False`` view must therefore be a plain refresh, as
+    PostgreSQL refuses a concurrent one against a never-populated view.
     """
 
     verb = 'Refresh'
