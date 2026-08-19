@@ -25,6 +25,13 @@ def get_functions_module():
     return get_options().get('FUNCTIONS_MODULE_PATH', None)
 
 
+def get_views_module():
+    """
+    The module path view declarations are read from, relative to each app, or None when views are not managed.
+    """
+    return get_options().get('VIEWS_MODULE_PATH', None)
+
+
 def import_app_module(app_config, module_path):
     """
     Import a module from within an app, or return None when the app does not have one.

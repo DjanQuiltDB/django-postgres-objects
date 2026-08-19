@@ -25,6 +25,7 @@ class PostgresObjectsConfig(AppConfig):
             raise ImproperlyConfigured('The POSTGRES_OBJECTS setting must be a dict.')
 
         _validate_module_path(options, 'FUNCTIONS_MODULE_PATH', 'db_functions')
+        _validate_module_path(options, 'VIEWS_MODULE_PATH', 'db_views')
 
         # Wire into the Django migration autodetector with a patch so that we can exist next to autodetector wiring for
         # potential other libraries.

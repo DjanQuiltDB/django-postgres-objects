@@ -33,4 +33,5 @@ USE_TZ = True
 
 POSTGRES_OBJECTS = {
     'FUNCTIONS_MODULE_PATH': 'db_functions',
+    'VIEWS_MODULE_PATH': 'db_views',
 }

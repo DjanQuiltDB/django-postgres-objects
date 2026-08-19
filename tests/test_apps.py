@@ -43,3 +43,14 @@ class SettingsValidationTestCase(SimpleTestCase):
             self.ready()
 
         self.assertIn('module path', str(caught.exception))
+
+    @override_settings(POSTGRES_OBJECTS={'VIEWS_MODULE_PATH': ['db_views']})
+    def test_a_views_module_that_is_not_a_string_is_refused(self):
+        """
+        Case: The views module given as a list rather than a module path.
+        Expected: ImproperlyConfigured naming the key at fault, so each kind is validated on its own.
+        """
+        with self.assertRaises(ImproperlyConfigured) as caught:
+            self.ready()
+
+        self.assertIn('VIEWS_MODULE_PATH', str(caught.exception))

@@ -7,6 +7,7 @@ import re
 from django.db.models import Func
 
 from postgres_objects.base import Change, DeclarativeObject, DeclarativeObjectMeta, ObjectDefinition
+from postgres_objects.operations import AddFunction, AlterFunction, RemoveFunction
 
 FUNCTION_CREATE_SQL = """
 CREATE OR REPLACE FUNCTION {signature} RETURNS {returns} AS $function$
@@ -104,6 +105,17 @@ class FunctionDefinition(ObjectDefinition):
     """
 
     fields = ('name', 'db_name', 'arguments', 'returns', 'body', 'language', 'volatility', 'strict', 'parallel')
+
+    kind = 'function'
+    object_noun = 'function'
+    add_operation_class = AddFunction
+    alter_operation_class = AlterFunction
+    remove_operation_class = RemoveFunction
+
+    @property
+    def description(self):
+        # The signature rather than the name: overloads share a name and only the arguments tell them apart.
+        return self.signature
 
     @property
     def signature(self):

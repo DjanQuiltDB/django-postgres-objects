@@ -39,17 +39,20 @@ class Change:
     """
     How to get from one definition of an object to the next.
 
-    The distinction that matters is whether the old and new object can coexist. When they can, the new one is created
-    before the model migrations and the old one dropped after them, which gives anything depending on the old one (a
-    generated column, say) a migration in between to move across. When they cannot, both steps have to happen up front
-    and every dependent has to already be off the object.
+    The distinction that matters is whether the old and new object can coexist. When they can, the two steps straddle
+    the model migrations, which gives anything depending on the old one (a generated column, say) a migration in between
+    to move across. When they cannot, both steps have to happen together and every dependent has to already be off the
+    object.
+
+    Which side of the model migrations each step lands on is not decided here: it follows from the kind of object, via
+    ObjectDefinition.precedes_models.
     """
 
     UNCHANGED = 'unchanged'
     ALTER = 'alter'
-    #: Drop and recreate, both before the model migrations.
+    #: Drop and recreate together, on the side the object is created on.
     REPLACE = 'replace'
-    #: Create the new one before the model migrations, drop the old one after them.
+    #: Create the new one on the object's own side, drop the old one on the other.
     SUPERSEDE = 'supersede'
 
 
@@ -60,6 +63,30 @@ class ObjectDefinition:
 
     #: Attribute names carried by this kind of object, in the order deconstruct() writes them.
     fields = ()
+
+    #: Whether the object has to exist before the model migrations of its app run.
+    #:
+    #: A function is called from a generated column's expression, so it is created before them and dropped after. A
+    #: view reads from tables, so it is the inverse: created after them, and dropped before, since PostgreSQL
+    #: refuses to alter a column a view depends on.
+    precedes_models = True
+
+    #: What this kind of object is called in an operation's description.
+    object_noun = 'object'
+
+    #: The family this object belongs to, used to key what the migrations have created.
+    #:
+    #: Deliberately the family and not the exact class: PostgreSQL keeps functions and relations in separate namespaces,
+    #: so a function and a view may have identical identifiers and must not be conflated, while a plain view turning
+    #: into a materialized one is the *same* object changing and has to be seen as a change rather than as an unrelated
+    #: object appearing beside the old one.
+    kind = None
+
+    #: The operations that create, alter and remove this kind of object. Set on the subclass, which is why they are
+    #: named rather than imported here: operations.py knows nothing about any particular kind of object.
+    add_operation_class = None
+    alter_operation_class = None
+    remove_operation_class = None
 
     def __init__(self, **kwargs):
         missing = [field for field in self.fields if field not in kwargs]
@@ -88,11 +115,30 @@ class ObjectDefinition:
         path = '{}.{}'.format(type(self).__module__, type(self).__qualname__)
         return (path, [], {field: getattr(self, field) for field in self.fields})
 
+    @property
+    def description(self):
+        """
+        How this object is named in an operation's description. Overridden where a name alone is ambiguous.
+        """
+        return self.db_name
+
     def create_sql(self):
         raise NotImplementedError
 
     def drop_sql(self, schema_name):
         raise NotImplementedError
+
+    def create_statements(self):
+        """
+        Every statement needed to create the object, in order.
+
+        Most objects are one statement; a materialized view is its CREATE plus an index per declared index. Operations
+        execute these one at a time rather than as a single blob, so sqlmigrate shows them separately.
+        """
+        return (self.create_sql(),)
+
+    def drop_statements(self, schema_name):
+        return (self.drop_sql(schema_name),)
 
     def plan_change_from(self, previous):
         """

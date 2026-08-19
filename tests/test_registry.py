@@ -3,7 +3,12 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 
 from postgres_objects import Function
-from postgres_objects.registry import get_declared_objects, get_functions_module, import_app_module
+from postgres_objects.registry import (
+    get_declared_objects,
+    get_functions_module,
+    get_views_module,
+    import_app_module,
+)
 
 
 class ImportAppModuleTestCase(SimpleTestCase):
@@ -155,3 +160,21 @@ class FunctionsModuleSettingTestCase(SimpleTestCase):
         del settings.POSTGRES_OBJECTS
 
         self.assertIsNone(get_functions_module())
+
+
+class ViewsModuleSettingTestCase(SimpleTestCase):
+    def test_it_reads_its_own_key(self):
+        """
+        Case: The views module is configured.
+        Expected: Its path is returned, separately from the functions one, so each kind is declared in its own module.
+        """
+        self.assertEqual(get_views_module(), 'db_views')
+
+    @override_settings(POSTGRES_OBJECTS={'FUNCTIONS_MODULE_PATH': 'db_functions'})
+    def test_managing_functions_alone_leaves_views_unmanaged(self):
+        """
+        Case: A project naming only the functions module.
+        Expected: None for views, so adopting the second kind of object is opt-in.
+        """
+        self.assertIsNone(get_views_module())
+        self.assertEqual(get_functions_module(), 'db_functions')

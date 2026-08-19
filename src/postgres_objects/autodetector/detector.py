@@ -5,8 +5,7 @@ The autodetector mixin that splices the object migrations into whatever Django d
 from django.db.migrations import Migration
 from django.db.migrations.autodetector import MigrationAutodetector
 
-from postgres_objects.autodetector.changes import get_object_changes
-from postgres_objects.registry import get_functions_module
+from postgres_objects.autodetector.changes import KINDS, get_object_changes
 
 
 def build_migration(app_label, name, operations):
@@ -36,12 +35,11 @@ class DeclarativeObjectAutodetectorMixin:
     def _detect_changes(self, convert_apps=None, graph=None):
         changes = super()._detect_changes(convert_apps, graph)
 
-        # The setting names the module to read declarations from. This functionality is disabled by leaving it unset.
-        module_path = get_functions_module()
-        if graph is None or not module_path:
+        # A settings key names the module each kind of declaration is read from. Naming none of them disables all.
+        if graph is None or not any(get_module() for _, _, get_module in KINDS):
             return changes
 
-        leading, trailing = get_object_changes(graph, module_path)
+        leading, trailing = get_object_changes(graph)
 
         # Each app's first migration as Django detected it, before anything is spliced in front of it.
         first_model_migration = {
@@ -74,7 +72,7 @@ class DeclarativeObjectAutodetectorMixin:
         # Removals mirror the additions: any app's migrations may have been the last thing referencing an object, so
         # each removal migration waits for every app's last regular migration.
         for app_label in sorted(trailing):
-            migration = build_migration(app_label, 'auto_db_objects_removed', trailing[app_label])
+            migration = build_migration(app_label, 'auto_db_objects_last', trailing[app_label])
             for other_app, last_migration in last_regular_migration.items():
                 migration.dependencies.append((other_app, last_migration.name))
             changes.setdefault(app_label, []).append(migration)

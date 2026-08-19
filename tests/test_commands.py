@@ -14,16 +14,40 @@ class MakeMigrationsTestCase(MigrationWritingMixin, TestCase):
     def test_the_function_migration_is_written_in_front_of_the_model_migration(self):
         """
         Case: Run makemigrations for an app whose model has a generated column calling a declared function.
-        Expected: Two migrations, the function in the first and the model in the second. The spliced migration is
+        Expected: The function comes in the first migration and the model in the second. The spliced migration is
                   numbered first, so it is renamed to 0001_initial rather than keeping the auto_db_objects placeholder
                   it was built with.
         """
         written = self.make_migrations()
 
-        self.assertEqual(len(written), 2, written)
         self.assertIn('AddFunction', self.read(written[0]))
         self.assertNotIn('AddFunction', self.read(written[1]))
         self.assertIn('CreateModel', self.read(written[1]))
+
+    def test_the_view_migration_is_written_behind_the_model_migration(self):
+        """
+        Case: Run makemigrations for an app declaring both functions and views.
+        Expected: Three migrations, with the views last. That is the ordering inversion: a function has to exist before
+                  the column calling it, while a view can only be created once the table it selects from is there.
+        """
+        written = self.make_migrations()
+
+        self.assertEqual(len(written), 3, written)
+        self.assertNotIn('AddView', self.read(written[0]))
+        self.assertNotIn('AddView', self.read(written[1]))
+        self.assertIn('AddView', self.read(written[2]))
+        self.assertIn('CreateModel', self.read(written[1]))
+
+    def test_a_view_is_created_after_the_view_it_selects_from(self):
+        """
+        Case: Read the generated view migration, which holds a view built on another one.
+        Expected: The one being selected from comes first, since declaration order is what decides the order they are
+                  created in.
+        """
+        written = self.make_migrations()
+        source = self.read(written[2])
+
+        self.assertLess(source.index("name='uppercasedcakes'"), source.index("name='stackedcakes'"))
 
     def test_the_model_migration_depends_on_the_function_migration(self):
         """

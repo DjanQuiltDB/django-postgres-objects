@@ -11,6 +11,14 @@ class DatabaseObjectOperation(Operation):
     reversible = True
     atomic = True
 
+    #: How the autodetector's fold over the migration graph should read this operation. An operation that is neither
+    #: (a refresh, say) does not change what the migrations say exists, so the fold ignores it.
+    creates = False
+    removes = False
+
+    #: The verb this operation is described by. The noun comes from the definition.
+    verb = None
+
     def __init__(self, definition, hints=None):
         self.definition = definition
 
@@ -49,32 +57,54 @@ class DatabaseObjectOperation(Operation):
             cursor.execute('SELECT current_schema()')
             return cursor.fetchone()[0]
 
+    def describe(self):
+        return '{} {} {}'.format(self.verb, self.definition.object_noun, self.definition.description)
+
+    @property
+    def migration_name_fragment(self):
+        return '{}_{}_{}'.format(self.verb.lower(), self.definition.object_noun, self.definition.name.lower())
+
+    def _execute(self, schema_editor, statements):
+        for statement in statements:
+            # params=None so a literal % in a body or a view's SQL is not read as a placeholder.
+            schema_editor.execute(statement, params=None)
+
     def _create(self, app_label, schema_editor, definition=None):
         if self.allowed(app_label, schema_editor):
-            schema_editor.execute((definition or self.definition).create_sql(), params=None)
+            self._execute(schema_editor, (definition or self.definition).create_statements())
 
     def _drop(self, app_label, schema_editor, definition=None):
         if self.allowed(app_label, schema_editor):
             definition = definition or self.definition
-            schema_editor.execute(definition.drop_sql(self.target_schema(schema_editor)), params=None)
+            self._execute(schema_editor, definition.drop_statements(self.target_schema(schema_editor)))
 
 
-class AddFunction(DatabaseObjectOperation):
+class AddOperation(DatabaseObjectOperation):
+    """
+    Create the object, and drop it again when reversed.
+    """
+
+    creates = True
+    verb = 'Create'
+
     def database_forwards(self, app_label, schema_editor, from_state, to_state):
         self._create(app_label, schema_editor)
 
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
         self._drop(app_label, schema_editor)
 
-    def describe(self):
-        return 'Create function {}'.format(self.definition.signature)
 
-    @property
-    def migration_name_fragment(self):
-        return 'create_function_{}'.format(self.definition.name.lower())
+class AlterOperation(DatabaseObjectOperation):
+    """
+    Replace the object in place, carrying the previous definition so the change can be reversed.
 
+    Only for objects whose CREATE can replace an existing one; a materialized view, for instance, has no such form and
+    is changed by dropping and recreating instead.
+    """
 
-class AlterFunction(DatabaseObjectOperation):
+    creates = True
+    verb = 'Alter'
+
     def __init__(self, definition, previous, hints=None):
         super().__init__(definition, hints=hints)
         self.previous = previous
@@ -90,24 +120,82 @@ class AlterFunction(DatabaseObjectOperation):
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
         self._create(app_label, schema_editor, definition=self.previous)
 
-    def describe(self):
-        return 'Alter function {}'.format(self.definition.signature)
 
-    @property
-    def migration_name_fragment(self):
-        return 'alter_function_{}'.format(self.definition.name.lower())
+class RemoveOperation(DatabaseObjectOperation):
+    """
+    Drop the object, and create it again when reversed.
+    """
 
+    removes = True
+    verb = 'Remove'
 
-class RemoveFunction(DatabaseObjectOperation):
     def database_forwards(self, app_label, schema_editor, from_state, to_state):
         self._drop(app_label, schema_editor)
 
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
         self._create(app_label, schema_editor)
 
-    def describe(self):
-        return 'Remove function {}'.format(self.definition.signature)
 
-    @property
-    def migration_name_fragment(self):
-        return 'remove_function_{}'.format(self.definition.name.lower())
+class AddFunction(AddOperation):
+    pass
+
+
+class AlterFunction(AlterOperation):
+    pass
+
+
+class RemoveFunction(RemoveOperation):
+    pass
+
+
+class AddView(AddOperation):
+    pass
+
+
+class RemoveView(RemoveOperation):
+    pass
+
+
+class RefreshMaterializedView(DatabaseObjectOperation):
+    """
+    Repopulate a materialized view.
+
+    Never written by the autodetector: whether a view's contents are stale is not something a declaration can say, so
+    this is for putting in a migration by hand, usually after the data it reads has been loaded. It creates and removes
+    nothing, so the autodetector's fold over the graph ignores it.
+
+    CONCURRENTLY keeps the view readable while it refreshes, which PostgreSQL only allows when the view carries a unique
+    index and has been populated at least once.
+    """
+
+    verb = 'Refresh'
+
+    def __init__(self, definition, concurrently=False, hints=None):
+        super().__init__(definition, hints=hints)
+
+        if not getattr(definition, 'materialized', False):
+            raise ValueError('{} is not a materialized view, so it cannot be refreshed.'.format(definition.db_name))
+
+        if concurrently and not definition.unique_index:
+            raise ValueError(
+                'Refreshing {} concurrently needs a unique_index on the declaration, which is what PostgreSQL requires '
+                'to refresh without locking readers out.'.format(definition.db_name)
+            )
+
+        self.concurrently = concurrently
+
+    def deconstruct(self):
+        name, args, kwargs = super().deconstruct()
+        if self.concurrently:
+            kwargs['concurrently'] = True
+        return (name, args, kwargs)
+
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        if self.allowed(app_label, schema_editor):
+            self._execute(schema_editor, (self.definition.refresh_sql(concurrently=self.concurrently),))
+
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        """
+        Nothing. A refresh has no inverse, and rolling a migration back must not fail on that account.
+        """
+        pass
