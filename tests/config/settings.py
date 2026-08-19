@@ -17,6 +17,8 @@ ALLOWED_HOSTS = []
 INSTALLED_APPS = (
     'django.contrib.auth',
     'django.contrib.contenttypes',
+    'postgres_objects',
+    'example',
 )
 
 DATABASES = {
@@ -28,3 +30,7 @@ DATABASES = {
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 
 USE_TZ = True
+
+POSTGRES_OBJECTS = {
+    'FUNCTIONS_MODULE_PATH': 'db_functions',
+}
