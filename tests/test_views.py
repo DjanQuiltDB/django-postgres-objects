@@ -1,10 +1,12 @@
 from django.core.exceptions import ImproperlyConfigured
-from django.db import connection
-from django.test import SimpleTestCase, TransactionTestCase
+from django.db import DEFAULT_DB_ALIAS, connection
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from django.utils.connection import ConnectionDoesNotExist
 from example.models import Cake
 
 from postgres_objects import Change, MaterializedView, View, ViewDefinition
 from postgres_objects.operations import AddView, RefreshMaterializedView, RemoveView
+from postgres_objects.views import build_refresh_sql
 
 APP_LABEL = 'example'
 SOURCE_TABLE = 'view_source_table'
@@ -15,6 +17,23 @@ def declare(class_name, base=View, **attrs):
     namespace.update(attrs)
 
     return type(base)(class_name, (base,), namespace)
+
+
+def cake_names():
+    return Cake.objects.values('name')
+
+
+class RecordingRouter:
+    """
+    A router that records the writes it is asked about and answers with a connection of its own, standing in for a
+    project routing its reads and writes rather than its migrations.
+    """
+
+    calls = []
+
+    def db_for_write(self, model, **hints):
+        RecordingRouter.calls.append((model, hints))
+        return 'somewhere_else'
 
 
 class ViewSqlTestCase(SimpleTestCase):
@@ -101,6 +120,18 @@ class ViewSqlTestCase(SimpleTestCase):
         definition = declare('Uppercased').definition
 
         self.assertEqual(definition.create_statements(), (definition.create_sql(),))
+
+    def test_the_refresh_names_the_view_unqualified(self):
+        """
+        Case: REFRESH for a materialized view, plain and concurrent.
+        Expected: The statement names the view the way its CREATE did.
+        """
+        definition = declare('Totals', base=MaterializedView, unique_index=('id',)).definition
+
+        self.assertEqual(definition.refresh_sql(), 'REFRESH MATERIALIZED VIEW example_totals;')
+        self.assertEqual(
+            definition.refresh_sql(concurrently=True), 'REFRESH MATERIALIZED VIEW CONCURRENTLY example_totals;'
+        )
 
 
 class ViewReferenceTestCase(SimpleTestCase):
@@ -371,6 +402,57 @@ class ViewOperationTestCase(TransactionTestCase):
 
         self.assertTrue(self.is_populated('example_totals'))
 
+    def test_a_declaration_refreshes_itself(self):
+        """
+        Case: Call refresh() on a declaration whose view was created empty.
+        Expected: Populated afterwards, so stale rows can be replaced from ordinary code rather than from a migration.
+        """
+        declaration = self.declare_view(
+            'Totals', base=MaterializedView, sql='SELECT name FROM {}'.format(SOURCE_TABLE), with_data=False
+        )
+
+        self.apply(AddView(declaration.definition))
+        self.assertFalse(self.is_populated('example_totals'))
+
+        declaration.refresh()
+
+        self.assertTrue(self.is_populated('example_totals'))
+
+    def test_a_declaration_refreshes_itself_concurrently(self):
+        """
+        Case: Call refresh(concurrently=True) on a declaration carrying a unique index.
+        Expected: It succeeds, which is the whole reason a caller reaches for it: readers are not locked out.
+        """
+        declaration = self.declare_view(
+            'Totals',
+            base=MaterializedView,
+            sql='SELECT name FROM {} GROUP BY name'.format(SOURCE_TABLE),
+            unique_index=('name',),
+        )
+        self.apply(AddView(declaration.definition))
+
+        declaration.refresh(concurrently=True)
+
+        self.assertTrue(self.is_populated('example_totals'))
+
+    @override_settings(DATABASE_ROUTERS=['test_views.RecordingRouter'])
+    def test_a_named_connection_is_not_routed(self):
+        """
+        Case: refresh(using=...) with a router in the way that would answer differently.
+        Expected: The named connection is used and the router is never asked, so a caller can always say outright where
+                  the refresh goes.
+        """
+        declaration = self.declare_view(
+            'Totals', base=MaterializedView, sql='SELECT name FROM {}'.format(SOURCE_TABLE), with_data=False
+        )
+        self.apply(AddView(declaration.definition))
+        RecordingRouter.calls = []
+
+        declaration.refresh(using=DEFAULT_DB_ALIAS)
+
+        self.assertTrue(self.is_populated('example_totals'))
+        self.assertEqual(RecordingRouter.calls, [])
+
     def is_populated(self, db_name):
         with connection.cursor() as cursor:
             cursor.execute('SELECT relispopulated FROM pg_catalog.pg_class WHERE relname = %s', [db_name])
@@ -419,6 +501,114 @@ class RefreshMaterializedViewTestCase(SimpleTestCase):
         operation = RefreshMaterializedView(declare('Totals', base=MaterializedView).definition)
 
         operation.database_backwards(APP_LABEL, None, None, None)
+
+
+class RefreshFromCodeTestCase(SimpleTestCase):
+    """
+    What refresh() decides before it reaches the database: whether it may run at all, and on which connection.
+    """
+
+    def setUp(self):
+        super().setUp()
+        RecordingRouter.calls = []
+
+    def test_refreshing_the_base_declaration_is_refused(self):
+        """
+        Case: Call refresh() on MaterializedView itself.
+        Expected: TypeError saying it is abstract, since there is no view of that name to repopulate.
+        """
+        with self.assertRaises(TypeError) as caught:
+            MaterializedView.refresh()
+
+        self.assertIn('abstract', str(caught.exception))
+
+    def test_a_concurrent_refresh_without_a_unique_index_is_refused(self):
+        """
+        Case: Ask a declaration declaring no unique index to refresh concurrently.
+        Expected: The same ValueError the migration operation gives, rather than a database error a caller has to read
+                  backwards.
+        """
+        with self.assertRaises(ValueError) as caught:
+            declare('Totals', base=MaterializedView).refresh(concurrently=True)
+
+        self.assertIn('unique_index', str(caught.exception))
+
+    @override_settings(DATABASE_ROUTERS=['test_views.RecordingRouter'])
+    def test_a_queryset_view_is_refreshed_where_its_source_model_is_written(self):
+        """
+        Case: The connection chosen for a queryset-declared view with a router configured.
+        Expected: The router's answer for the model the queryset reads. The view's own generated model is deliberately
+                  absent from the app registry, so a router resolving placement by looking a model up would fail on it.
+        """
+        declaration = declare('Counts', base=MaterializedView, sql=None, queryset=cake_names)
+
+        self.assertEqual(declaration.db_for_refresh(), 'somewhere_else')
+        self.assertEqual(RecordingRouter.calls, [(Cake, {})])
+
+    @override_settings(DATABASE_ROUTERS=['test_views.RecordingRouter'])
+    def test_the_declared_router_hints_reach_the_router(self):
+        """
+        Case: A queryset-declared view carrying router_hints.
+        Expected: They are handed to db_for_write, so the vocabulary that places an object's migrations places its
+                  refreshes too.
+        """
+        declaration = declare(
+            'Counts', base=MaterializedView, sql=None, queryset=cake_names, router_hints={'target': 'ovens'}
+        )
+
+        declaration.db_for_refresh()
+
+        self.assertEqual(RecordingRouter.calls, [(Cake, {'target': 'ovens'})])
+
+    @override_settings(DATABASE_ROUTERS=['test_views.RecordingRouter'])
+    def test_a_raw_sql_view_is_refreshed_on_the_default_connection(self):
+        """
+        Case: The connection chosen for a raw-sql declaration, which has no model to route by.
+        Expected: The default connection, and the router is not asked at all rather than asked about something it cannot
+                  recognise.
+        """
+        self.assertEqual(declare('Totals', base=MaterializedView).db_for_refresh(), DEFAULT_DB_ALIAS)
+        self.assertEqual(RecordingRouter.calls, [])
+
+    def test_a_refresh_does_not_compile_the_queryset(self):
+        """
+        Case: A concurrent refresh of a declaration whose queryset raises when called, and which declares no
+              unique_index.
+        Expected: The unique_index ValueError. The view exists in the database whether or not the declaration still
+                  compiles, so a refresh consults only the identifier and the index, never the body.
+        """
+
+        def broken():
+            raise RuntimeError('the queryset must not be compiled for a refresh')
+
+        declaration = declare('Totals', base=MaterializedView, sql=None, queryset=broken)
+
+        with self.assertRaises(ValueError) as caught:
+            declaration.refresh(concurrently=True)
+
+        self.assertIn('unique_index', str(caught.exception))
+
+    def test_a_refresh_without_using_consults_db_for_refresh(self):
+        """
+        Case: refresh() with no `using` on a declaration whose db_for_refresh is overridden.
+        Expected: The connection is looked up under the override's answer.
+        """
+        declaration = declare('Totals', base=MaterializedView, db_for_refresh=classmethod(lambda cls: 'somewhere_else'))
+
+        with self.assertRaisesMessage(ConnectionDoesNotExist, 'somewhere_else'):
+            declaration.refresh()
+
+    def test_the_runtime_refresh_and_the_operation_render_the_same_statement(self):
+        """
+        Case: The statement refresh() executes and the one the migration operation renders from the full definition.
+        Expected: Identical, so the runtime call and the operation can never drift apart.
+        """
+        declaration = declare('Totals', base=MaterializedView, unique_index=('id',))
+
+        self.assertEqual(
+            build_refresh_sql(declaration.resolved_db_name, declaration.unique_index, concurrently=True),
+            declaration.definition.refresh_sql(concurrently=True),
+        )
 
 
 class ViewDescriptionTestCase(SimpleTestCase):

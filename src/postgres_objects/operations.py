@@ -165,11 +165,19 @@ class RemoveView(RemoveOperation):
 
 class RefreshMaterializedView(DatabaseObjectOperation):
     """
-    Repopulate a materialized view.
+    Repopulate a materialized view as a migration runs.
 
-    Never written by the autodetector: whether a view's contents are stale is not something a declaration can say, so
-    this is for putting in a migration by hand, usually after the data it reads has been loaded. It creates and removes
-    nothing, so the autodetector's fold over the graph ignores it.
+    This is where the *first* fill of a view declared ``with_data=False`` belongs. PostgreSQL refuses to read such a
+    view until a refresh has run, and the migration that created it is the only thing that reaches every database those
+    migrations are applied to. Written by hand, since nothing in the declaration says the fill is wanted.
+
+    A refresh for staleness is another job entirely: when stored rows fall behind the tables underneath them (after an
+    import, on a schedule, at the end of a task) is not something a migration can be written for.
+    :meth:`~postgres_objects.views.MaterializedView.refresh` should be used in that case.
+
+    The operation is never written by the autodetector, since whether a view's contents are stale is not something a
+    declaration can say. It creates and removes nothing, so the autodetector's fold over the graph ignores it. It is the
+    responsibility of the project developer creating the MaterializedView to manage this.
 
     CONCURRENTLY keeps the view readable while it refreshes, which PostgreSQL only allows when the view carries a unique
     index and has been populated at least once.
@@ -183,11 +191,10 @@ class RefreshMaterializedView(DatabaseObjectOperation):
         if not getattr(definition, 'materialized', False):
             raise ValueError('{} is not a materialized view, so it cannot be refreshed.'.format(definition.db_name))
 
-        if concurrently and not definition.unique_index:
-            raise ValueError(
-                'Refreshing {} concurrently needs a unique_index on the declaration, which is what PostgreSQL requires '
-                'to refresh without locking readers out.'.format(definition.db_name)
-            )
+        # Checked as the operation is built rather than as it runs, so a migration that could never work fails while it
+        # is being written. The definition holds the rule, which is what keeps this and a refresh from code saying the
+        # same thing.
+        definition.check_refresh(concurrently)
 
         self.concurrently = concurrently
 

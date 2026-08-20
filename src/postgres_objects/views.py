@@ -5,6 +5,7 @@ Declarative PostgreSQL views and materialized views.
 from types import FunctionType
 
 from django.core.exceptions import ImproperlyConfigured
+from django.db import DEFAULT_DB_ALIAS, connections, router
 from django.db.backends.utils import truncate_name
 from django.db.models import Model
 
@@ -20,6 +21,28 @@ from postgres_objects.querysets import build_model, compile_queryset
 
 VIEW_CREATE_SQL = 'CREATE OR REPLACE VIEW {db_name}{options} AS {sql};'
 MATERIALIZED_VIEW_CREATE_SQL = 'CREATE MATERIALIZED VIEW {db_name}{options} AS {sql}{with_data};'
+REFRESH_SQL = 'REFRESH MATERIALIZED VIEW{concurrently} {db_name};'
+
+
+def check_refresh(db_name, unique_index, concurrently):
+    """
+    Refuse a refresh PostgreSQL would refuse, in the one place the migration operation and the runtime call meet.
+    """
+    if concurrently and not unique_index:
+        raise ValueError(
+            'Refreshing {} concurrently needs a unique_index on the declaration, which is what PostgreSQL requires '
+            'to refresh without locking readers out.'.format(db_name)
+        )
+
+
+def build_refresh_sql(db_name, unique_index, concurrently=False):
+    """
+    The refresh statement, from the two things it actually needs: the identifier and the unique index the check wants
+    to see. Working from so little is what lets refresh() run without compiling the declaration's body.
+    """
+    check_refresh(db_name, unique_index, concurrently)
+
+    return REFRESH_SQL.format(concurrently=' CONCURRENTLY' if concurrently else '', db_name=db_name)
 
 
 def resolve_reference(reference):
@@ -164,10 +187,15 @@ class MaterializedViewDefinition(ViewDefinition):
     def drop_sql(self, schema_name):
         return 'DROP MATERIALIZED VIEW IF EXISTS "{schema}".{db_name};'.format(schema=schema_name, db_name=self.db_name)
 
+    def check_refresh(self, concurrently):
+        """
+        The module-level check over this definition's fields. Kept as a method because the refresh operation calls it
+        when the migration is written.
+        """
+        check_refresh(self.db_name, self.unique_index, concurrently)
+
     def refresh_sql(self, concurrently=False):
-        return 'REFRESH MATERIALIZED VIEW{concurrently} {db_name};'.format(
-            concurrently=' CONCURRENTLY' if concurrently else '', db_name=self.db_name
-        )
+        return build_refresh_sql(self.db_name, self.unique_index, concurrently)
 
 
 class ViewMeta(DeclarativeObjectMeta):
@@ -369,8 +397,9 @@ class MaterializedView(View, metaclass=MaterializedViewMeta):
                 sql = 'SELECT baker_id, count(*) AS cakes FROM example_cake GROUP BY baker_id'
                 unique_index = ('baker_id',)
 
-    Populate it again with the ``RefreshMaterializedView`` operation, which is written by hand rather than autodetected:
-    whether the stored rows are stale is not something a declaration can know.
+    Populate it again with :meth:`refresh`, or with the ``RefreshMaterializedView`` operation where the fill belongs in
+    a migration. Neither is ever autodetected: whether the stored rows are stale is not something a declaration can
+    know.
     """
 
     abstract = True
@@ -382,5 +411,50 @@ class MaterializedView(View, metaclass=MaterializedViewMeta):
     #: Further indexes, each a tuple of column names.
     indexes = ()
 
-    #: Whether to populate the view as it is created. A large view is often cheaper to create empty and refresh later.
+    #: Whether to populate the view as it is created, rendered as WITH NO DATA when it is False. A large view is often
+    #: cheaper to create empty and refresh later, at the price of being unreadable until that refresh runs.
     with_data = True
+
+    @classmethod
+    def db_for_refresh(cls):
+        """
+        Which connection :meth:`refresh` runs on when it is not told one.
+
+        A declared queryset reads a model the project's routers already know, so that model's ``db_for_write`` answer is
+        the placement to follow. This is the same reasoning by which compiling routes through the queryset's own
+        connection. A raw-sql body names tables and nothing else, so there is nothing to ask a router about and the
+        default connection stands.
+
+        The view's *own* generated model is deliberately not what is asked about: it lives in a private app registry, so
+        a router resolving placement by looking a model up would not find it.
+        """
+        if not cls.queryset:
+            return DEFAULT_DB_ALIAS
+
+        return router.db_for_write(cls.queryset().model, **cls.router_hints)
+
+    @classmethod
+    def refresh(cls, concurrently=False, using=None):
+        """
+        Repopulate the view now, from ordinary code rather than from a migration.
+
+        Stored rows go stale as the tables underneath them change, and when that happens is not something a migration
+        can be written for: after an import, on a schedule, at the end of a task.
+
+        ``concurrently`` keeps the view readable while it refreshes, which PostgreSQL allows only for a view carrying a
+        unique index and populated at least once.
+
+        ``using`` names the connection outright, and is handed to ``connections`` untouched — anything that indexes it
+        works, not only a string alias. Left out, :meth:`db_for_refresh` decides.
+
+        The statement is built from the identifier and the unique index alone — the body is never compiled here, so a
+        refresh stays cheap on a hot path and works whether or not the declaration still compiles.
+        """
+        if cls.abstract:
+            raise TypeError('{} is abstract, so there is no view to refresh.'.format(cls.__name__))
+
+        sql = build_refresh_sql(cls.resolved_db_name, tuple(cls.unique_index or ()), concurrently)
+
+        with connections[using if using is not None else cls.db_for_refresh()].cursor() as cursor:
+            # params=None so a literal % in the identifier is not read as a placeholder.
+            cursor.execute(sql, None)

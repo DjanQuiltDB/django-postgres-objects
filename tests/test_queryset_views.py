@@ -619,6 +619,47 @@ class QuerysetViewOperationTestCase(TransactionTestCase):
         row = declaration.objects.get(app_label='contenttypes')
         self.assertEqual(row.kinds, ContentType.objects.filter(app_label='contenttypes').count())
 
+    def test_a_refresh_from_code_moves_the_stored_rows(self):
+        """
+        Case: Change the source table under a compiled materialized view, then call refresh() on the declaration.
+        Expected: The stale count before, the new one after, read through the declaration's own manager.
+        """
+        declaration = declare(
+            'Totals',
+            base=MaterializedView,
+            unique_index=('app_label',),
+            queryset=lambda: ContentType.objects.values('app_label').annotate(kinds=Count('id')),
+        )
+        self.apply(AddView(declaration.definition))
+        stale = declaration.objects.get(app_label='contenttypes').kinds
+
+        ContentType.objects.create(app_label='contenttypes', model='cake_of_the_day')
+        self.assertEqual(declaration.objects.get(app_label='contenttypes').kinds, stale)
+
+        declaration.refresh()
+
+        self.assertEqual(declaration.objects.get(app_label='contenttypes').kinds, stale + 1)
+
+    def test_a_refresh_calls_the_queryset_at_most_once(self):
+        """
+        Case: A refresh from code, with the declaration's queryset wrapped in a call counter.
+        Expected: One call, the routing decision in db_for_refresh. The refresh statement itself needs only the
+                  identifier and the unique index, so nothing else compiles or touches the queryset on this hot path.
+        """
+        calls = []
+
+        def counted():
+            calls.append(1)
+            return ContentType.objects.values('id', 'app_label', 'model')
+
+        declaration = declare('Kinds', base=MaterializedView, queryset=counted)
+        self.apply(AddView(declaration.definition))
+        calls.clear()
+
+        declaration.refresh()
+
+        self.assertEqual(len(calls), 1)
+
     def test_reversing_drops_a_compiled_view(self):
         """
         Case: Reverse the AddView of a compiled definition.
