@@ -27,6 +27,9 @@ class PostgresObjectsConfig(AppConfig):
         _validate_module_path(options, 'FUNCTIONS_MODULE_PATH', 'db_functions')
         _validate_module_path(options, 'VIEWS_MODULE_PATH', 'db_views')
 
+        # Importing the module is what registers the checks; nothing runs until the check framework asks.
+        from postgres_objects import checks  # noqa: F401, PLC0415
+
         # Wire into the Django migration autodetector with a patch so that we can exist next to autodetector wiring for
         # potential other libraries.
         from postgres_objects.autodetector import patch_migrations  # noqa: PLC0415

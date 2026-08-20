@@ -15,3 +15,25 @@ class Cake(models.Model):
 
     class Meta:
         app_label = 'example'
+
+
+class BundtCake(Cake):
+    """
+    A concrete child of Cake, so its primary key is the parent link rather than a column of its own.
+    """
+
+    ring_size = models.IntegerField(default=1)
+
+    class Meta:
+        app_label = 'example'
+
+
+class BundtOrder(models.Model):
+    """
+    Points at the multi-table child, so selecting its foreign key dereferences through the parent link.
+    """
+
+    bundt = models.ForeignKey(BundtCake, on_delete=models.CASCADE)
+
+    class Meta:
+        app_label = 'example'

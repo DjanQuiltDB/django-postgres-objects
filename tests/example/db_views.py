@@ -1,3 +1,6 @@
+from django.db.models import Count
+
+from example.models import Cake
 from postgres_objects import MaterializedView, View
 
 
@@ -25,3 +28,15 @@ class CakeTotals(MaterializedView):
     sql = 'SELECT name, count(*) AS cakes FROM example_cake GROUP BY name'
     unique_index = ('name',)
     indexes = [('cakes',)]
+
+
+class CakeCounts(MaterializedView):
+    """
+    A materialized view whose body is a queryset, so its columns are declared exactly once. Importing the app's models
+    at the top of this module is fine: queryset() is only called when a definition or a model is needed.
+    """
+
+    unique_index = ('name',)
+
+    def queryset():
+        return Cake.objects.values('name').annotate(cakes=Count('id'))

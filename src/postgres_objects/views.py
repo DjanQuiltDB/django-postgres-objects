@@ -2,6 +2,8 @@
 Declarative PostgreSQL views and materialized views.
 """
 
+from types import FunctionType
+
 from django.db.backends.utils import truncate_name
 
 from postgres_objects.base import (
@@ -12,6 +14,7 @@ from postgres_objects.base import (
     ObjectDefinition,
 )
 from postgres_objects.operations import AddView, RemoveView
+from postgres_objects.querysets import build_model, compile_queryset
 
 VIEW_CREATE_SQL = 'CREATE OR REPLACE VIEW {db_name}{options} AS {sql};'
 MATERIALIZED_VIEW_CREATE_SQL = 'CREATE MATERIALIZED VIEW {db_name}{options} AS {sql}{with_data};'
@@ -136,35 +139,129 @@ class MaterializedViewDefinition(ViewDefinition):
 
 
 class ViewMeta(DeclarativeObjectMeta):
-    @property
-    def definition(cls):
+    def __new__(mcs, class_name, bases, namespace, **kwargs):
+        cls = super().__new__(mcs, class_name, bases, namespace, **kwargs)
+
+        # queryset() is written without self, because a declaration is never instantiated. Reached through the class a
+        # plain function is already called that way, so wrapping it changes nothing about how it runs; the wrapper only
+        # states it.
+        queryset = namespace.get('queryset')
+        if isinstance(queryset, FunctionType):
+            cls.queryset = staticmethod(queryset)
+
+        return cls
+
+    def check_body(cls):
+        """
+        Refuse a declaration whose body is missing or said twice, in the one place both flavours meet.
+        """
         if cls.abstract:
             raise TypeError('{} is abstract, so it has no definition.'.format(cls.__name__))
 
-        if not cls.sql:
-            raise TypeError('{} declares no sql, so there is nothing to select from.'.format(cls.__name__))
+        if cls.sql and cls.queryset:
+            raise TypeError(
+                '{} declares both sql and queryset, so what the view selects is said twice. Keep one of them.'.format(
+                    cls.__name__
+                )
+            )
 
+        if not cls.sql and not cls.queryset:
+            raise TypeError(
+                '{} declares neither sql nor queryset, so there is nothing to select from.'.format(cls.__name__)
+            )
+
+    @property
+    def compiled(cls):
+        """
+        The declared queryset, compiled once and kept.
+
+        Cached on this very class rather than looked up through inheritance, because a subclass is a concrete view of
+        its own whose columns must be its own.
+        """
+        if 'compiled_queryset' not in cls.__dict__:
+            cls.compiled_queryset = compile_queryset(cls.queryset())
+
+        return cls.compiled_queryset
+
+    @property
+    def resolved_sql(cls):
+        """
+        The SELECT this view is defined as, compiled from the declared queryset when there is one.
+
+        Compiling is deferred to here, so importing a declarations module costs nothing and the module can import its
+        app's models at the top: nothing is asked of the ORM until a definition or a model is first needed.
+        """
+        cls.check_body()
+
+        if cls.sql:
+            return cls.sql
+
+        return cls.compiled.sql
+
+    @property
+    def model(cls):
+        """
+        A model over this view's columns, for reading it back through the ORM.
+
+        Built when first asked for and kept, so a declaration whose model is never touched costs nothing.
+        """
+        cls.check_body()
+
+        if not cls.queryset:
+            raise TypeError(
+                '{} declares raw sql, whose columns are not knowable from here, so it has no model. Declare a '
+                'queryset() instead, or write an unmanaged model against {} by hand.'.format(
+                    cls.__name__, cls.resolved_db_name
+                )
+            )
+
+        if 'generated_model' not in cls.__dict__:
+            cls.generated_model = build_model(cls, cls.compiled)
+
+        return cls.generated_model
+
+    @property
+    def objects(cls):
+        return cls.model._default_manager
+
+    @property
+    def definition(cls):
         return ViewDefinition(
             name=cls.name,
             db_name=cls.resolved_db_name,
-            sql=cls.sql,
+            sql=cls.resolved_sql,
             options=dict(cls.options or {}),
         )
 
 
 class MaterializedViewMeta(ViewMeta):
+    def check_indexes(cls):
+        """
+        Refuse an index over a column the queryset does not select.
+
+        Only possible for the queryset flavour, whose columns are known here; with raw sql the first word comes from
+        PostgreSQL at migrate time.
+        """
+        if not cls.queryset:
+            return
+
+        names = cls.compiled.column_names
+        for columns in filter(None, (cls.unique_index, *cls.indexes)):
+            for column in columns:
+                if column not in names:
+                    raise TypeError(
+                        "{} indexes '{}', but its queryset selects {}.".format(cls.__name__, column, ', '.join(names))
+                    )
+
     @property
     def definition(cls):
-        if cls.abstract:
-            raise TypeError('{} is abstract, so it has no definition.'.format(cls.__name__))
-
-        if not cls.sql:
-            raise TypeError('{} declares no sql, so there is nothing to select from.'.format(cls.__name__))
+        cls.check_body()
+        cls.check_indexes()
 
         return MaterializedViewDefinition(
             name=cls.name,
             db_name=cls.resolved_db_name,
-            sql=cls.sql,
+            sql=cls.resolved_sql,
             options=dict(cls.options or {}),
             unique_index=tuple(cls.unique_index or ()),
             indexes=tuple(tuple(columns) for columns in cls.indexes),
@@ -191,8 +288,17 @@ class View(DeclarativeObject, metaclass=ViewMeta):
 
     abstract = True
 
-    #: The SELECT the view is defined as. A trailing semicolon is optional.
+    #: The SELECT the view is defined as. A trailing semicolon is optional. Exactly one of this and `queryset`.
     sql = None
+
+    #: A method returning the queryset the view selects. Written without self, since a declaration is never
+    #: instantiated, and called only when the definition or the model is first needed, which is what lets the declaring
+    #: module import its app's models at the top. Exactly one of this and `sql`.
+    queryset = None
+
+    #: Names the column the generated model is keyed by, where it cannot be worked out: it falls back to a
+    #: materialized view's single-column unique_index, and then to an id column.
+    primary_key = None
 
     #: Reloptions, rendered into the CREATE's WITH clause, e.g. {'security_invoker': 'true'} or
     #: {'check_option': 'cascaded'}.

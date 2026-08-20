@@ -86,6 +86,20 @@ class MakeMigrationsTestCase(MigrationWritingMixin, TestCase):
 
         self.assertEqual(self.make_migrations(), first)
 
+    def test_a_queryset_view_migration_is_self_contained(self):
+        """
+        Case: Read the generated view migration, which includes a view declared as a queryset.
+        Expected: The compiled SELECT spelled out and no reference to the declaring module, its models or the queryset,
+                  so the migration means the same thing however the declaration changes later.
+        """
+        written = self.make_migrations()
+        source = self.read(written[2])
+
+        self.assertIn("name='cakecounts'", source)
+        self.assertIn('"example_cake"."name"', source)
+        self.assertNotIn('example.db_views', source)
+        self.assertNotIn('queryset', source)
+
     def test_a_body_change_writes_a_recalculation_behind_the_alteration(self):
         """
         Case: Edit the body of the function the example model's generated column calls, and run makemigrations again.
