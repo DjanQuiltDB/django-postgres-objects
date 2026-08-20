@@ -25,7 +25,7 @@ def get_recalculations(function_names, from_state, to_state):
 
     for (app_label, model_name), model_state in sorted(to_state.models.items()):
         for field_name, field in model_state.fields.items():
-            if not isinstance(field, GeneratedField) or not field.db_persist:
+            if not isinstance(field, GeneratedField) or not field.db_persist or not field.recalculate:
                 continue
 
             if not field.referenced_function_names() & function_names:

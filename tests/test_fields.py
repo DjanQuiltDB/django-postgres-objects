@@ -1,3 +1,4 @@
+from django.core.exceptions import ImproperlyConfigured
 from django.db import models
 from django.db.models import F, Value
 from django.db.models.functions import Concat, Upper
@@ -61,6 +62,52 @@ class DeconstructTestCase(SimpleTestCase):
         _, _, _, kwargs = field(Upper(F('name'))).deconstruct()
 
         self.assertNotIn('recalculate_on', kwargs)
+
+    def test_the_opt_out_survives_a_clone(self):
+        """
+        Case: A field that opted out of recalculation, cloned the way ModelState clones every field.
+        Expected: The clone is still opted out.
+        """
+        clone = field(Upper(F('name')), recalculate=False).clone()
+
+        self.assertFalse(clone.recalculate)
+
+    def test_recalculate_is_omitted_when_left_on(self):
+        """
+        Case: A field with recalculation left at its default.
+        Expected: deconstruct() leaves the kwarg out.
+        """
+        _, _, _, kwargs = field(Upper(F('name'))).deconstruct()
+
+        self.assertNotIn('recalculate', kwargs)
+
+
+class ArgumentValidationTestCase(SimpleTestCase):
+    def test_an_expression_is_refused(self):
+        """
+        Case: A queryset expression passed where a declaration was meant.
+        Expected: ImproperlyConfigured.
+        """
+        doubled = declare('Doubled')
+
+        with self.assertRaisesMessage(ImproperlyConfigured, 'postgres_objects.Function declarations'):
+            field(Upper(F('name')), recalculate_on=(doubled(F('name')),))
+
+    def test_an_abstract_declaration_is_refused(self):
+        """
+        Case: An abstract declaration, which names no function in the database.
+        Expected: ImproperlyConfigured.
+        """
+        with self.assertRaisesMessage(ImproperlyConfigured, 'is abstract'):
+            field(Upper(F('name')), recalculate_on=(declare('Shared', abstract=True),))
+
+    def test_opting_out_while_naming_dependencies_is_refused(self):
+        """
+        Case: recalculate=False together with a non-empty recalculate_on.
+        Expected: ImproperlyConfigured.
+        """
+        with self.assertRaisesMessage(ImproperlyConfigured, 'Drop one of the two'):
+            field(Upper(F('name')), recalculate=False, recalculate_on=('example_doubled',))
 
 
 class RecalculateOnTestCase(SimpleTestCase):

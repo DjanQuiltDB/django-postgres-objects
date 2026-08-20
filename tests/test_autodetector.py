@@ -705,6 +705,18 @@ class RecalculationTestCase(SimpleTestCase):
 
         self.assertEqual(trailing, {})
 
+    def test_an_opted_out_column_is_left_alone(self):
+        """
+        Case: A wrapper field carrying recalculate=False, whose expression does call the changed function.
+        Expected: No recalculation.
+        """
+        current, graph = self.altered_body()
+        state = project_state(field=generated(current, recalculate=False))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertEqual(trailing, {})
+
     def test_an_explicit_dependency_recalculates(self):
         """
         Case: The column's expression does not call the changed function; recalculate_on names it, standing in for a

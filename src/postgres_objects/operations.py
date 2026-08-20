@@ -216,8 +216,8 @@ class RecalculateGeneratedField(Operation):
     replacing a function's body leaves existing rows holding values the old body produced. SET EXPRESSION, handed the
     expression the column already has, forces the table rewrite that brings them up to date.
 
-    Written by the autodetector when a declared function used by a :class:`postgres_objects.GeneratedField` changes what
-    it computes.
+    Written by the autodetector when a :class:`postgres_objects.functions.Function` declaration used by a
+    :class:`postgres_objects.GeneratedField` changes what it computes.
 
     The operation is not a DatabaseObjectOperation: it belongs to a model, not to a declared object, and the
     autodetector's fold over the migration graph ignores it since it changes no definition.
