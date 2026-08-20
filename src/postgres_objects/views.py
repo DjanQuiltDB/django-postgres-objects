@@ -4,7 +4,9 @@ Declarative PostgreSQL views and materialized views.
 
 from types import FunctionType
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db.backends.utils import truncate_name
+from django.db.models import Model
 
 from postgres_objects.base import (
     MAX_IDENTIFIER_LENGTH,
@@ -18,6 +20,32 @@ from postgres_objects.querysets import build_model, compile_queryset
 
 VIEW_CREATE_SQL = 'CREATE OR REPLACE VIEW {db_name}{options} AS {sql};'
 MATERIALIZED_VIEW_CREATE_SQL = 'CREATE MATERIALIZED VIEW {db_name}{options} AS {sql}{with_data};'
+
+
+def resolve_reference(reference):
+    """
+    The table name a ``depends_on`` entry refers to.
+
+    A View declaration or a model class is accepted for readability and normalized to the identifier it is created
+    under; a plain string is taken as that identifier itself. Anything else is refused outright rather than left to fail
+    as an AttributeError further along, the same way recalculate_on entries are handled in fields.py.
+    """
+    if isinstance(reference, str):
+        return reference
+
+    if isinstance(reference, type):
+        if issubclass(reference, Model):
+            return reference._meta.db_table
+
+        if isinstance(reference, DeclarativeObjectMeta) and issubclass(reference, View):
+            if reference.abstract:
+                raise ImproperlyConfigured('{} is abstract, so it names no relation.'.format(reference.__name__))
+
+            return reference.resolved_db_name
+
+    raise ImproperlyConfigured(
+        'depends_on takes View declarations, models or table names as strings, not {!r}.'.format(reference)
+    )
 
 
 def format_options(options):
@@ -35,7 +63,11 @@ class ViewDefinition(ObjectDefinition):
     Everything about a view that ends up in SQL. This is what migrations serialize.
     """
 
-    fields = ('name', 'db_name', 'sql', 'options')
+    fields = ('name', 'db_name', 'sql', 'options', 'references')
+
+    # References describe the SQL rather than adding to it, and a definition written by hand should not have to spell
+    # out something it can say with the sql alone.
+    defaults = {'references': ()}
 
     # A view reads from tables, so unlike a function it is created after the model migrations and dropped before them.
     precedes_models = False
@@ -82,7 +114,7 @@ class MaterializedViewDefinition(ViewDefinition):
     A view whose rows are stored rather than computed per query.
     """
 
-    fields = ('name', 'db_name', 'sql', 'options', 'unique_index', 'indexes', 'with_data')
+    fields = ('name', 'db_name', 'sql', 'options', 'references', 'unique_index', 'indexes', 'with_data')
 
     object_noun = 'materialized view'
     materialized = True
@@ -199,6 +231,18 @@ class ViewMeta(DeclarativeObjectMeta):
         return cls.compiled.sql
 
     @property
+    def references(cls):
+        """
+        The tables this view reads, as the identifiers its SQL names them by.
+        """
+        cls.check_body()
+
+        derived = cls.compiled.tables if cls.queryset else ()
+        declared = (resolve_reference(reference) for reference in cls.depends_on)
+
+        return tuple(sorted((set(derived) | set(declared)) - {cls.resolved_db_name}))
+
+    @property
     def model(cls):
         """
         A model over this view's columns, for reading it back through the ORM.
@@ -231,6 +275,7 @@ class ViewMeta(DeclarativeObjectMeta):
             db_name=cls.resolved_db_name,
             sql=cls.resolved_sql,
             options=dict(cls.options or {}),
+            references=cls.references,
         )
 
 
@@ -263,6 +308,7 @@ class MaterializedViewMeta(ViewMeta):
             db_name=cls.resolved_db_name,
             sql=cls.resolved_sql,
             options=dict(cls.options or {}),
+            references=cls.references,
             unique_index=tuple(cls.unique_index or ()),
             indexes=tuple(tuple(columns) for columns in cls.indexes),
             with_data=cls.with_data,
@@ -303,6 +349,10 @@ class View(DeclarativeObject, metaclass=ViewMeta):
     #: Reloptions, rendered into the CREATE's WITH clause, e.g. {'security_invoker': 'true'} or
     #: {'check_option': 'cascaded'}.
     options = None
+
+    #: Relations this view reads that compiling cannot discover: everything a raw-sql body reads, above all. Each
+    #: entry is a View declaration, a model, or a table name as a string. Additive to what a queryset says itself.
+    depends_on = ()
 
 
 class MaterializedView(View, metaclass=MaterializedViewMeta):

@@ -1,8 +1,10 @@
+import warnings
 from unittest import mock
 
 from django.core.management.commands import makemigrations, migrate
 from django.db import models
 from django.db.migrations.autodetector import MigrationAutodetector
+from django.db.migrations.exceptions import CircularDependencyError
 from django.db.migrations.graph import MigrationGraph
 from django.db.migrations.state import ModelState, ProjectState
 from django.db.models import F
@@ -12,6 +14,8 @@ from postgres_objects import Function, GeneratedField, MaterializedView, View
 from postgres_objects.autodetector import (
     DeclarativeObjectAutodetector,
     DeclarativeObjectAutodetectorMixin,
+    MigratedObject,
+    UnmigratedAppWarning,
     build_migration,
     compose,
     get_autodetector,
@@ -116,7 +120,10 @@ class GetMigratedObjectsTestCase(SimpleTestCase):
         definition = declare('Doubled').definition
         graph = build_graph(migration_with('example', '0001', AddFunction(definition)))
 
-        self.assertEqual(get_migrated_objects(graph), {('example', 'function', 'doubled'): (definition, {})})
+        self.assertEqual(
+            get_migrated_objects(graph),
+            {('example', 'function', 'doubled'): MigratedObject(definition, {}, ('example', '0001'))},
+        )
 
     def test_a_later_alteration_wins(self):
         """
@@ -132,7 +139,10 @@ class GetMigratedObjectsTestCase(SimpleTestCase):
             migration_with('example', '0002', AlterFunction(second, first), dependencies=[('example', '0001')])
         )
 
-        self.assertEqual(get_migrated_objects(build_graph(nodes)), {('example', 'function', 'doubled'): (second, {})})
+        self.assertEqual(
+            get_migrated_objects(build_graph(nodes)),
+            {('example', 'function', 'doubled'): MigratedObject(second, {}, ('example', '0002'))},
+        )
 
     def test_a_removal_drops_it(self):
         """
@@ -176,7 +186,8 @@ class GetMigratedObjectsTestCase(SimpleTestCase):
         graph = build_graph(migration_with('example', '0001', AddFunction(definition, hints={'target': 'ovens'})))
 
         self.assertEqual(
-            get_migrated_objects(graph), {('example', 'function', 'doubled'): (definition, {'target': 'ovens'})}
+            get_migrated_objects(graph),
+            {('example', 'function', 'doubled'): MigratedObject(definition, {'target': 'ovens'}, ('example', '0001'))},
         )
 
     def test_an_object_belongs_to_the_app_whose_migration_created_it(self):
@@ -214,7 +225,7 @@ class GetObjectChangesTestCase(SimpleTestCase):
             'postgres_objects.autodetector.changes.get_declarations',
             return_value={(d.resolved_app_label, d.definition.kind, d.name): d for d in declared},
         ):
-            return get_object_changes(graph)
+            return get_object_changes(graph)[:2]
 
     def test_a_new_declaration_is_added_before_the_model_migrations(self):
         """
@@ -304,10 +315,12 @@ class GetObjectChangesTestCase(SimpleTestCase):
 
         self.assertEqual(self.changes([declaration], build_graph(nodes)), ({}, {}))
 
-    def test_changed_hints_add_first_and_remove_after(self):
+    def test_changed_hints_drop_and_recreate_up_front(self):
         """
-        Case: The declaration is annotated to live somewhere else.
-        Expected: Same shape as a signature change, because the new copy is created somewhere the old one is not.
+        Case: The declaration is annotated to live somewhere else, its definition untouched.
+        Expected: The drop and the create run adjacent, drop first, before the model migrations. The superseding shape
+                  would be destructive here: on any connection both hint sets allow, its trailing drop names the very
+                  function the leading create just wrote.
         """
         previous = declare('Doubled').definition
         declaration = declare('Doubled', router_hints={'target': 'ovens'})
@@ -315,8 +328,69 @@ class GetObjectChangesTestCase(SimpleTestCase):
 
         leading, trailing = self.changes([declaration], graph)
 
-        self.assertEqual(leading['example'][0].hints, {'target': 'ovens'})
-        self.assertEqual(trailing['example'][0].hints, {})
+        self.assertIsInstance(leading['example'][0], RemoveFunction)
+        self.assertEqual(leading['example'][0].hints, {})
+        self.assertIsInstance(leading['example'][1], AddFunction)
+        self.assertEqual(leading['example'][1].hints, {'target': 'ovens'})
+        self.assertEqual(trailing, {})
+
+    def test_changed_hints_with_an_altered_body_drop_and_recreate_up_front(self):
+        """
+        Case: The body edited and the placement annotation changed in the same run.
+        Expected: The same adjacent drop-and-recreate, the removal carrying the old definition and hints and the
+                  creation the new ones, so each connection ends up with exactly what its hints allow.
+        """
+        previous = declare('Doubled').definition
+        declaration = declare('Doubled', body='BEGIN RETURN input || input; END;', router_hints={'target': 'ovens'})
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous)))
+
+        leading, trailing = self.changes([declaration], graph)
+
+        self.assertIsInstance(leading['example'][0], RemoveFunction)
+        self.assertEqual(leading['example'][0].definition, previous)
+        self.assertEqual(leading['example'][0].hints, {})
+        self.assertIsInstance(leading['example'][1], AddFunction)
+        self.assertEqual(leading['example'][1].definition, declaration.definition)
+        self.assertEqual(leading['example'][1].hints, {'target': 'ovens'})
+        self.assertEqual(trailing, {})
+
+    def test_a_written_hints_change_detects_nothing_on_the_next_run(self):
+        """
+        Case: The graph holds the written result of a hints change: the removal of the old copy followed by the creation
+              under the new hints, adjacent in one leading migration.
+        Expected: A second run detects nothing.
+        """
+        declaration = declare('Doubled', router_hints={'target': 'ovens'})
+        previous = declare('Doubled').definition
+
+        nodes = {}
+        nodes.update(migration_with('example', '0001', AddFunction(previous)))
+        nodes.update(
+            migration_with(
+                'example',
+                '0002',
+                RemoveFunction(previous),
+                AddFunction(declaration.definition, hints={'target': 'ovens'}),
+                dependencies=[('example', '0001')],
+            )
+        )
+
+        self.assertEqual(self.changes([declaration], build_graph(nodes)), ({}, {}))
+
+    def test_a_default_only_argument_change_alters_in_place(self):
+        """
+        Case: A parameter gains a default clause, nothing else changes.
+        Expected: A single leading AlterFunction and no trailing operation, since Postgres still sees the same function.
+                  This is the whole pipeline's view of what plan_change_from decides.
+        """
+        previous = declare('Doubled').definition
+        declaration = declare('Doubled', arguments="input TEXT DEFAULT ''")
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous)))
+
+        leading, trailing = self.changes([declaration], graph)
+
+        self.assertIsInstance(leading['example'][0], AlterFunction)
+        self.assertEqual(trailing, {})
 
     def test_a_dropped_declaration_is_removed_after_the_model_migrations(self):
         """
@@ -346,6 +420,46 @@ class GetObjectChangesTestCase(SimpleTestCase):
         self.assertEqual(trailing, {})
         self.assertIsInstance(leading['example'][0], AlterFunction)
 
+    def test_a_written_rename_is_not_swept_as_a_drop_on_the_next_run(self):
+        """
+        Case: The graph holds the written result of a pinned-db_name rename: the AddFunction under the old name
+              followed by the AlterFunction recorded under the new one.
+        Expected: A second run detects nothing.
+        """
+        previous = declare('OldName', db_name='pinned').definition
+        declaration = declare('NewName', db_name='pinned')
+
+        nodes = {}
+        nodes.update(migration_with('example', '0001', AddFunction(previous)))
+        nodes.update(
+            migration_with(
+                'example', '0002', AlterFunction(declaration.definition, previous), dependencies=[('example', '0001')]
+            )
+        )
+
+        self.assertEqual(self.changes([declaration], build_graph(nodes)), ({}, {}))
+
+    def test_a_rename_matches_the_same_apps_object_first(self):
+        """
+        Case: Two apps' migrations each created a function under the pinned identifier (each on its own database, as
+              routing hints allow), and the declaration in one of them is renamed.
+        Expected: The rename is matched to the declaring app's own record rather than to whichever app the fold
+                  happened to visit last, and no drop of the identifier is emitted for the other record either.
+        """
+        example_previous = declare('OldName', db_name='pinned').definition
+        other_previous = declare('OtherOld', db_name='pinned', app_label='other').definition
+        declaration = declare('NewName', db_name='pinned')
+
+        nodes = {}
+        nodes.update(migration_with('example', '0001', AddFunction(example_previous)))
+        nodes.update(migration_with('other', '0001', AddFunction(other_previous)))
+
+        leading, trailing = self.changes([declaration], build_graph(nodes))
+
+        self.assertIsInstance(leading['example'][0], AlterFunction)
+        self.assertEqual(leading['example'][0].previous, example_previous)
+        self.assertEqual(trailing, {})
+
     def test_a_rename_is_not_assumed_when_the_old_name_is_still_declared(self):
         """
         Case: Two declarations share a db_name, one of them the previously migrated name.
@@ -373,7 +487,7 @@ class ViewPlacementTestCase(SimpleTestCase):
             'postgres_objects.autodetector.changes.get_declarations',
             return_value={(d.resolved_app_label, d.definition.kind, d.name): d for d in declared},
         ):
-            return get_object_changes(graph)
+            return get_object_changes(graph)[:2]
 
     def test_a_new_view_is_created_after_the_model_migrations(self):
         """
@@ -418,6 +532,23 @@ class ViewPlacementTestCase(SimpleTestCase):
         self.assertIsInstance(trailing['example'][0], AddView)
         self.assertEqual(trailing['example'][0].definition, declaration.definition)
 
+    def test_a_views_changed_hints_drop_before_and_recreate_after(self):
+        """
+        Case: A view annotated to live somewhere else, its definition untouched.
+        Expected: The straddle, exactly like an edited SELECT: a view's drop side runs before its create side on every
+                  connection, so the shape that is destructive for functions is the safe and preferable one here.
+        """
+        previous = declare_view('Uppercased').definition
+        declaration = declare_view('Uppercased', router_hints={'target': 'ovens'})
+        graph = build_graph(migration_with('example', '0001', AddView(previous)))
+
+        leading, trailing = self.changes([declaration], graph)
+
+        self.assertIsInstance(leading['example'][0], RemoveView)
+        self.assertEqual(leading['example'][0].hints, {})
+        self.assertIsInstance(trailing['example'][0], AddView)
+        self.assertEqual(trailing['example'][0].hints, {'target': 'ovens'})
+
     def test_an_unchanged_view_produces_nothing(self):
         """
         Case: A view matching what the migrations already created.
@@ -427,6 +558,24 @@ class ViewPlacementTestCase(SimpleTestCase):
         graph = build_graph(migration_with('example', '0001', AddView(declaration.definition)))
 
         self.assertEqual(self.changes([declaration], graph), ({}, {}))
+
+    def test_a_renamed_views_identifier_is_never_swept_as_a_drop(self):
+        """
+        Case: The graph records the pinned identifier as created under the old name and again under the new one, with
+              the removal of the old key not (or no longer) recorded. (This indicates a partially recorded rename.)
+        Expected: A second run detects nothing. The sweep must never emit a RemoveView whose DROP names an identifier a
+                  live declaration owns.
+        """
+        previous = declare_view('OldName', db_name='pinned').definition
+        declaration = declare_view('NewName', db_name='pinned')
+
+        nodes = {}
+        nodes.update(migration_with('example', '0001', AddView(previous)))
+        nodes.update(
+            migration_with('example', '0002', AddView(declaration.definition), dependencies=[('example', '0001')])
+        )
+
+        self.assertEqual(self.changes([declaration], build_graph(nodes)), ({}, {}))
 
     def test_a_view_and_a_function_of_the_same_name_are_separate_objects(self):
         """
@@ -496,6 +645,152 @@ class ViewPlacementTestCase(SimpleTestCase):
             [operation.definition for operation in trailing['example']], [base.definition, stacked.definition]
         )
 
+    def test_a_view_saying_what_it_reads_is_created_after_it_whatever_the_order(self):
+        """
+        Case: Two new views, the one being read declared last.
+        Expected: The one being read is created first, the other second.
+        """
+        stacked = declare_view('Stacked', depends_on=['example_base'])
+        base = declare_view('Base')
+
+        _, trailing = self.changes([stacked, base], MigrationGraph())
+
+        self.assertEqual(
+            [operation.definition for operation in trailing['example']], [base.definition, stacked.definition]
+        )
+
+    def test_a_view_saying_what_it_reads_is_dropped_before_it_whatever_the_order(self):
+        """
+        Case: The same two views deleted at once.
+        Expected: The dependent one is dropped first.
+        """
+        base = declare_view('Base').definition
+        stacked = declare_view('Stacked', depends_on=['example_base']).definition
+
+        nodes = {}
+        nodes.update(migration_with('example', '0001', AddView(stacked)))
+        nodes.update(migration_with('example', '0002', AddView(base), dependencies=[('example', '0001')]))
+
+        leading, _ = self.changes([], build_graph(nodes))
+
+        self.assertEqual([operation.definition for operation in leading['example']], [stacked, base])
+
+    def test_two_views_of_one_app_reading_each_other_are_refused(self):
+        """
+        Case: Two views in the same app, each declaring that it reads the other.
+        Expected: Refused loudly. Falling back to declaration order would write a migration whose operations are
+                  silently mis-ordered and fail only at apply time.
+        """
+        first = declare_view('First', depends_on=['example_second'])
+        second = declare_view('Second', depends_on=['example_first'])
+
+        with self.assertRaisesMessage(CircularDependencyError, 'read from each other'):
+            self.changes([first, second], MigrationGraph())
+
+    def test_a_reference_to_a_view_of_another_app_does_not_reorder_this_one(self):
+        """
+        Case: A view reading one another app owns.
+        Expected: No reordering (ordering across apps is a migration dependency, not a position in a list).
+        """
+        first = declare_view('First', depends_on=['other_thing'])
+        second = declare_view('Second')
+
+        _, trailing = self.changes([first, second], MigrationGraph())
+
+        self.assertEqual(
+            [operation.definition for operation in trailing['example']], [first.definition, second.definition]
+        )
+
+
+class UnmigratedAppWarningTestCase(SimpleTestCase):
+    def detect(self, leading, trailing):
+        autodetector = DeclarativeObjectAutodetector(ProjectState(), ProjectState())
+
+        with (
+            mock.patch.object(MigrationAutodetector, '_detect_changes', return_value={}),
+            mock.patch(
+                'postgres_objects.autodetector.detector.get_object_changes', return_value=(leading, trailing, {})
+            ),
+        ):
+            return autodetector._detect_changes(graph=MigrationGraph())
+
+    def test_an_app_without_a_migrations_package_warns(self):
+        """
+        Case: Database-object changes land in an app Django's questioner refuses an initial migration for, simulating
+              an app with no migrations package.
+        Expected: An UnmigratedAppWarning naming the app.
+        """
+        declaration = declare('Doubled', app_label='homeless')
+
+        with self.assertWarnsRegex(UnmigratedAppWarning, 'homeless'):
+            self.detect({'homeless': [AddFunction(declaration.definition)]}, {})
+
+    def test_a_trailing_only_app_without_a_migrations_package_warns(self):
+        """
+        Case: The unwritable app holds only a trailing removal.
+        Expected: An UnmigratedAppWarning naming the app.
+        """
+        declaration = declare('Doubled', app_label='homeless')
+
+        with self.assertWarnsRegex(UnmigratedAppWarning, 'homeless'):
+            self.detect({}, {'homeless': [RemoveFunction(declaration.definition)]})
+
+    def test_an_app_with_a_migrations_package_does_not_warn(self):
+        """
+        Case: The same change in an app whose migrations package exists, if empty.
+        Expected: No warning (Django will write the initial migration for it).
+        """
+        declaration = declare('Doubled')
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', UnmigratedAppWarning)
+            self.detect({'example': [AddFunction(declaration.definition)]}, {})
+
+
+class KindConfigurationTestCase(SimpleTestCase):
+    def changes(self, declared, graph):
+        with mock.patch(
+            'postgres_objects.autodetector.changes.get_declarations',
+            return_value={(d.resolved_app_label, d.definition.kind, d.name): d for d in declared},
+        ):
+            return get_object_changes(graph)[:2]
+
+    @override_settings(POSTGRES_OBJECTS={'FUNCTIONS_MODULE_PATH': 'db_functions'})
+    def test_an_unset_views_module_sweeps_no_view(self):
+        """
+        Case: A migrated view, with only the functions module configured.
+        Expected: Nothing happens.
+        """
+        previous = declare_view('Uppercased').definition
+        graph = build_graph(migration_with('example', '0001', AddView(previous)))
+
+        self.assertEqual(self.changes([], graph), ({}, {}))
+
+    @override_settings(POSTGRES_OBJECTS={'VIEWS_MODULE_PATH': 'db_views'})
+    def test_an_unset_functions_module_sweeps_no_function(self):
+        """
+        Case: A migrated function, with only the views module configured.
+        Expected: Nothing happens.
+        """
+        previous = declare('Doubled').definition
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous)))
+
+        self.assertEqual(self.changes([], graph), ({}, {}))
+
+    @override_settings(POSTGRES_OBJECTS={'FUNCTIONS_MODULE_PATH': 'db_functions'})
+    def test_a_configured_kind_is_still_swept_while_the_other_is_off(self):
+        """
+        Case: A migrated function whose declaration was deleted, with the views module unset.
+        Expected: The function is still removed after the model migrations; only the unmanaged view is exempt.
+        """
+        previous = declare('Doubled').definition
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous)))
+
+        leading, trailing = self.changes([], graph)
+
+        self.assertEqual(leading, {})
+        self.assertIsInstance(trailing['example'][0], RemoveFunction)
+
 
 def project_state(app_label='example', field=None, extra_fields=()):
     """
@@ -530,7 +825,7 @@ class RecalculationTestCase(SimpleTestCase):
             'postgres_objects.autodetector.changes.get_declarations',
             return_value={(d.resolved_app_label, d.definition.kind, d.name): d for d in declared},
         ):
-            return get_object_changes(graph, from_state, to_state)
+            return get_object_changes(graph, from_state, to_state)[:2]
 
     def altered_body(self):
         """
@@ -790,7 +1085,9 @@ class SplicingTestCase(SimpleTestCase):
 
         with (
             mock.patch.object(MigrationAutodetector, '_detect_changes', return_value=changes),
-            mock.patch('postgres_objects.autodetector.detector.get_object_changes', return_value=(leading, trailing)),
+            mock.patch(
+                'postgres_objects.autodetector.detector.get_object_changes', return_value=(leading, trailing, {})
+            ),
         ):
             return autodetector._detect_changes(graph=MigrationGraph())
 
@@ -867,6 +1164,164 @@ class SplicingTestCase(SimpleTestCase):
         recalculation = result['other'][-1]
         self.assertEqual(recalculation.name, 'auto_db_objects_last')
         self.assertIn(('example', 'auto_db_objects'), recalculation.dependencies)
+
+
+class CrossAppDependencyTestCase(SimpleTestCase):
+    def detect(self, leading, trailing, changes, graph=None):
+        autodetector = DeclarativeObjectAutodetector(ProjectState(), ProjectState())
+
+        with (
+            mock.patch.object(MigrationAutodetector, '_detect_changes', return_value=changes),
+            mock.patch(
+                'postgres_objects.autodetector.detector.get_object_changes', return_value=(leading, trailing, {})
+            ),
+        ):
+            return autodetector._detect_changes(graph=graph or MigrationGraph())
+
+    def test_a_view_waits_for_the_app_whose_view_it_creates(self):
+        """
+        Case: Two apps declaring a view in one run, one of them reading the other's.
+        Expected: The reading app's trailing migration depends on the other's.
+        """
+        base = declare_view('Base')
+        stacked = declare_view('Stacked', app_label='other', depends_on=['example_base'])
+
+        result = self.detect({}, {'example': [AddView(base.definition)], 'other': [AddView(stacked.definition)]}, {})
+
+        self.assertIn(('example', 'auto_db_objects_last'), result['other'][-1].dependencies)
+        self.assertNotIn(('other', 'auto_db_objects_last'), result['example'][-1].dependencies)
+
+    def test_a_view_waits_for_the_migration_that_created_what_it_reads(self):
+        """
+        Case: A view reading one an earlier run already created in another app.
+        Expected: A dependency on that exact migration.
+        """
+        base = declare_view('Base').definition
+        stacked = declare_view('Stacked', app_label='other', depends_on=['example_base'])
+        graph = build_graph(migration_with('example', '0001', AddView(base)))
+
+        result = self.detect({}, {'other': [AddView(stacked.definition)]}, {}, graph)
+
+        self.assertIn(('example', '0001'), result['other'][-1].dependencies)
+
+    def test_a_view_waits_for_an_untouched_apps_latest_migration(self):
+        """
+        Case: A view reading a model in an app with no changes in this run.
+        Expected: A dependency on that app's latest migration.
+        """
+        declaration = declare_view('Credits', app_label='other', depends_on=['example_cake'])
+        graph = build_graph(migration_with('example', '0005', mock.Mock()))
+
+        result = self.detect({}, {'other': [AddView(declaration.definition)]}, {}, graph)
+
+        self.assertIn(('example', '0005'), result['other'][-1].dependencies)
+
+    def test_a_view_reading_its_own_apps_view_needs_no_dependency(self):
+        """
+        Case: A view reading another declared in the same app.
+        Expected: No dependency added. (The two are ordered inside one migration, and an app cannot wait for itself.)
+        """
+        base = declare_view('Base')
+        stacked = declare_view('Stacked', depends_on=['example_base'])
+
+        result = self.detect({}, {'example': [AddView(base.definition), AddView(stacked.definition)]}, {})
+
+        self.assertNotIn(('example', 'auto_db_objects_last'), result['example'][-1].dependencies)
+
+    def test_dropping_a_view_waits_for_the_app_dropping_what_reads_it(self):
+        """
+        Case: Two apps dropping a view in one run, one of them reading the other's.
+        Expected: The app owning the dependency waits for the app dropping the dependent.
+        """
+        base = declare_view('Base').definition
+        stacked = declare_view('Stacked', app_label='other', depends_on=['example_base']).definition
+
+        result = self.detect({'example': [RemoveView(base)], 'other': [RemoveView(stacked)]}, {}, {})
+
+        self.assertIn(('other', 'auto_db_objects'), result['example'][0].dependencies)
+        self.assertNotIn(('example', 'auto_db_objects'), result['other'][0].dependencies)
+
+    def test_a_dependency_on_an_apps_on_disk_migration_is_not_a_cycle(self):
+        """
+        Case: One app's new view reads the other app's new view, while that other view reads a model table an on-disk
+              migration of the first app created, so the only edge between the two trailing migrations points one way.
+        Expected: Migrations are produced, wired to the on-disk migration and the trailing one respectively.
+        """
+        reads_table = declare_view('Base', app_label='other', depends_on=['example_cake'])
+        reads_view = declare_view('Stacked', depends_on=['other_base'])
+        graph = build_graph(migration_with('example', '0005', mock.Mock()))
+
+        result = self.detect(
+            {}, {'other': [AddView(reads_table.definition)], 'example': [AddView(reads_view.definition)]}, {}, graph
+        )
+
+        self.assertIn(('example', '0005'), result['other'][-1].dependencies)
+        self.assertIn(('other', 'auto_db_objects_last'), result['example'][-1].dependencies)
+
+    def test_two_apps_reading_each_other_are_refused(self):
+        """
+        Case: Each of two apps declaring a view that reads one of the other's.
+        Expected: Refused. (It is legal in Postgres but our code isn't equipped to handle it.)
+        """
+        trailing = {
+            'example': [
+                AddView(declare_view('First').definition),
+                AddView(declare_view('Second', depends_on=['other_third']).definition),
+            ],
+            'other': [
+                AddView(declare_view('Third', app_label='other').definition),
+                AddView(declare_view('Fourth', app_label='other', depends_on=['example_first']).definition),
+            ],
+        }
+
+        with self.assertRaisesMessage(CircularDependencyError, 'read from each other'):
+            self.detect({}, trailing, {})
+
+
+class CreatorDependencyTestCase(SimpleTestCase):
+    def detect(self, declared, graph):
+        autodetector = DeclarativeObjectAutodetector(ProjectState(), ProjectState())
+
+        with (
+            mock.patch.object(MigrationAutodetector, '_detect_changes', return_value={}),
+            mock.patch(
+                'postgres_objects.autodetector.changes.get_declarations',
+                return_value={(d.resolved_app_label, d.definition.kind, d.name): d for d in declared},
+            ),
+        ):
+            return autodetector._detect_changes(graph=graph)
+
+    def test_a_cross_app_rename_waits_for_the_creator_migration(self):
+        """
+        Case: A declaration with a pinned db_name moved to another app, its body changed in the same edit.
+        Expected: The new app's leading migration depends on the migration that created the function. On a fresh
+                  database nothing else orders the two apps, and running the alter first would let the creator's later
+                  CREATE OR REPLACE silently revert the body.
+        """
+        previous = declare('OldName', db_name='shared', app_label='app_old').definition
+        declaration = declare(
+            'NewName', db_name='shared', app_label='app_new', body='BEGIN RETURN input || input; END;'
+        )
+        graph = build_graph(migration_with('app_old', '0001', AddFunction(previous)))
+
+        result = self.detect([declaration], graph)
+
+        self.assertEqual(result['app_new'][0].name, 'auto_db_objects')
+        self.assertIn(('app_old', '0001'), result['app_new'][0].dependencies)
+
+    def test_a_same_app_rename_gains_no_self_dependency(self):
+        """
+        Case: The same pinned-db_name rename, staying inside the app whose migration created the function.
+        Expected: No dependency on the app's own creator migration; arrange_for_graph already anchors an app's first
+                  new migration on its own leaf.
+        """
+        previous = declare('OldName', db_name='shared').definition
+        declaration = declare('NewName', db_name='shared', body='BEGIN RETURN input || input; END;')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous)))
+
+        result = self.detect([declaration], graph)
+
+        self.assertNotIn(('example', '0001'), result['example'][0].dependencies)
 
 
 class DisabledTestCase(SimpleTestCase):
@@ -1060,7 +1515,7 @@ class CompositionTestCase(SimpleTestCase):
             mock.patch.object(MigrationAutodetector, '_detect_changes', return_value={}),
             mock.patch(
                 'postgres_objects.autodetector.detector.get_object_changes',
-                return_value=({'example': [AddFunction(declare('Doubled').definition)]}, {}),
+                return_value=({'example': [AddFunction(declare('Doubled').definition)]}, {}, {}),
             ),
         ):
             result = autodetector._detect_changes(graph=MigrationGraph())

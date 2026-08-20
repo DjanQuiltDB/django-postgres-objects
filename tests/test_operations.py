@@ -411,6 +411,21 @@ class RoutingTestCase(OperationTestCase):
 
         self.assertEqual(RecordingRouter.calls, [(APP_LABEL, {'target': 'here'})])
 
+    def test_a_hints_change_pair_leaves_the_function_in_place(self):
+        """
+        Case: The adjacent drop-and-recreate pair a placement change plans, applied on a connection that allows both
+              hint sets, standing in for a project with no routers.
+        Expected: The function exists afterwards. The superseding shape would have dropped after the model migrations
+                  what its leading create had just written.
+        """
+        declaration = declare('AllUppercase')
+        self.apply(AddFunction(declaration.definition))
+
+        self.apply(RemoveFunction(declaration.definition))
+        self.apply(AddFunction(declaration.definition, hints={'target': 'ovens'}))
+
+        self.assertEqual(self.function_exists('example_alluppercase'), 1)
+
     def test_no_router_allows_everything(self):
         """
         Case: A project with no routers configured, which is the common case.

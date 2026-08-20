@@ -64,6 +64,10 @@ class ObjectDefinition:
     #: Attribute names carried by this kind of object, in the order deconstruct() writes them.
     fields = ()
 
+    #: What a field falls back to when it is not given. Only for something a hand-written definition should not have
+    #: to spell out (a view's references, which describe the SQL rather than adding to it).
+    defaults = {}
+
     #: Whether the object has to exist before the model migrations of its app run.
     #:
     #: A function is called from a generated column's expression, so it is created before them and dropped after. A
@@ -89,7 +93,7 @@ class ObjectDefinition:
     remove_operation_class = None
 
     def __init__(self, **kwargs):
-        missing = [field for field in self.fields if field not in kwargs]
+        missing = [field for field in self.fields if field not in kwargs and field not in self.defaults]
         if missing:
             raise TypeError('{} is missing {}.'.format(type(self).__name__, ', '.join(missing)))
 
@@ -98,7 +102,7 @@ class ObjectDefinition:
             raise TypeError('{} got unexpected {}.'.format(type(self).__name__, ', '.join(sorted(unexpected))))
 
         for field in self.fields:
-            setattr(self, field, kwargs[field])
+            setattr(self, field, kwargs.get(field, self.defaults.get(field)))
 
     def __eq__(self, other):
         return type(self) is type(other) and self.deconstruct() == other.deconstruct()

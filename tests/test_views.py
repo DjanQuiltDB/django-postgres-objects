@@ -1,7 +1,9 @@
+from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
 from django.test import SimpleTestCase, TransactionTestCase
+from example.models import Cake
 
-from postgres_objects import Change, MaterializedView, View
+from postgres_objects import Change, MaterializedView, View, ViewDefinition
 from postgres_objects.operations import AddView, RefreshMaterializedView, RemoveView
 
 APP_LABEL = 'example'
@@ -99,6 +101,70 @@ class ViewSqlTestCase(SimpleTestCase):
         definition = declare('Uppercased').definition
 
         self.assertEqual(definition.create_statements(), (definition.create_sql(),))
+
+
+class ViewReferenceTestCase(SimpleTestCase):
+    def test_a_raw_sql_view_reads_nothing_it_has_not_been_told_about(self):
+        """
+        Case: A raw-sql declaration with no depends_on.
+        Expected: No references.
+        """
+        self.assertEqual(declare('Uppercased').definition.references, ())
+
+    def test_depends_on_names_a_declaration_a_model_or_a_table(self):
+        """
+        Case: The three things depends_on accepts.
+        Expected: All three normalized to the identifier the SQL names the relation by.
+        """
+        source = declare('Source')
+        declaration = declare('Uppercased', depends_on=[source, Cake, 'some_table'])
+
+        self.assertEqual(declaration.references, ('example_cake', 'example_source', 'some_table'))
+
+    def test_depends_on_refuses_what_names_no_relation(self):
+        """
+        Case: depends_on given a value that is not a class, and a class that is neither a model nor a declaration.
+        Expected: ImproperlyConfigured for both.
+        """
+        for reference in (object(), dict):
+            with self.subTest(reference=reference):
+                with self.assertRaisesMessage(ImproperlyConfigured, 'depends_on takes View declarations'):
+                    declare('Uppercased', depends_on=[reference]).definition
+
+    def test_depends_on_refuses_an_abstract_declaration(self):
+        """
+        Case: depends_on naming an abstract declaration, which is created as nothing.
+        Expected: Refused, since there is no relation to wait for.
+        """
+        base = declare('Base', abstract=True)
+
+        with self.assertRaisesMessage(ImproperlyConfigured, 'Base is abstract'):
+            declare('Uppercased', depends_on=[base]).definition
+
+    def test_a_view_does_not_read_itself(self):
+        """
+        Case: A declaration naming its own table, which a recursive-looking body invites.
+        Expected: Dropped, because an operation that had to run after itself could never be ordered.
+        """
+        self.assertEqual(declare('Uppercased', depends_on=['example_uppercased']).references, ())
+
+    def test_the_references_are_carried_into_the_migration(self):
+        """
+        Case: The deconstruction a migration is written from.
+        Expected: references among the fields.
+        """
+        _, _, kwargs = declare('Uppercased', depends_on=[Cake]).definition.deconstruct()
+
+        self.assertEqual(kwargs['references'], ('example_cake',))
+
+    def test_a_definition_written_by_hand_needs_no_references(self):
+        """
+        Case: A ViewDefinition built without naming references, as the documentation shows.
+        Expected: Accepted, reading as a view whose references are simply not recorded.
+        """
+        definition = ViewDefinition(name='uppercased', db_name='example_uppercased', sql='SELECT 1', options={})
+
+        self.assertEqual(definition.references, ())
 
 
 class ViewPlanChangeTestCase(SimpleTestCase):

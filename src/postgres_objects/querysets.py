@@ -15,6 +15,7 @@ from django.apps.registry import Apps
 from django.core.exceptions import EmptyResultSet, FieldError
 from django.db import DJANGO_VERSION_PICKLE_KEY, connections, models
 from django.db.models import QuerySet
+from django.db.models.sql import Query
 
 #: Auto fields describe a column a table fills in on insert, which is not something a view has. They also come with a
 #: primary_key=True their deconstruction puts back however it is cleared, and a model may carry only one of them, so a
@@ -29,16 +30,69 @@ AUTO_FIELD_EQUIVALENTS = {
 
 class CompiledQueryset:
     """
-    What a declared queryset compiles to: the SELECT, and the columns it produces, in order.
+    What a declared queryset compiles to: the SELECT, the columns it produces, in order, and the tables it reads.
     """
 
-    def __init__(self, sql, columns):
+    def __init__(self, sql, columns, tables):
         self.sql = sql
         self.columns = columns
+        self.tables = tables
 
     @property
     def column_names(self):
         return tuple(name for name, _ in self.columns)
+
+
+def walk_expressions(node):
+    """
+    A node and everything below it, following the source expressions each one exposes.
+
+    Both WhereNode and every expression answer get_source_expressions(), which is what makes one walk cover a filter
+    tree and an annotation alike. Anything that answers neither is a leaf.
+    """
+    yield node
+
+    get_source_expressions = getattr(node, 'get_source_expressions', None)
+    if get_source_expressions is None:
+        return
+
+    for child in get_source_expressions():
+        if child is not None:
+            yield from walk_expressions(child)
+
+
+def referenced_tables(query):
+    """
+    Every table the query reads, including through its subqueries.
+
+    The joined tables are the alias map; a subquery has an alias map of its own and is reached through the expressions
+    holding it (a Subquery annotation, an __in over a queryset, or an Exists in a filter).
+
+    This deliberately fails open. A construct the walk does not reach contributes no reference, which is no worse than
+    the ordering this package had before it read any of this, and `depends_on` is how a declaration says what was
+    missed.
+    """
+    tables = set()
+    pending = [query]
+    seen = set()
+
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+
+        seen.add(id(current))
+
+        for alias in current.alias_map.values():
+            tables.add(alias.table_name)
+
+        roots = (current.where, *current.annotations.values(), *(current.combined_queries or ()))
+        for root in roots:
+            for expression in walk_expressions(root):
+                if isinstance(expression, Query):
+                    pending.append(expression)
+
+    return tables
 
 
 def column_name(expression, alias):
@@ -111,7 +165,8 @@ def inline_params(sql, params, connection):
 
 def compile_queryset(queryset):
     """
-    Compile a declared queryset into the SELECT the view is defined as, and the columns it produces.
+    Compile a declared queryset into the SELECT the view is defined as, the columns it produces, and the tables it
+    reads.
 
     The connection is the one the queryset itself reads from (the router's db_for_read answer) but it only decides the
     dialect and the quoting. The SQL that comes out is frozen into a migration, and every environment applying that
@@ -164,7 +219,10 @@ def compile_queryset(queryset):
         except FieldError as error:
             raise TypeError("The type of column '{}' is not knowable: {}".format(name, error)) from error
 
-    return CompiledQueryset(inline_params(sql, params, connection), tuple(columns))
+    # Read after as_sql(), which is what populates the alias map of a subquery that had not been resolved yet.
+    tables = tuple(sorted(referenced_tables(query)))
+
+    return CompiledQueryset(inline_params(sql, params, connection), tuple(columns), tables)
 
 
 def resolve_primary_key(declaration, column_names):

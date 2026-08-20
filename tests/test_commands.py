@@ -1,9 +1,12 @@
+import warnings
 from unittest import mock
 
 from django.core.management import call_command, get_commands
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from example.db_functions import AllUppercase
 from migration_writing import MigrationWritingMixin
+
+from postgres_objects.autodetector import UnmigratedAppWarning
 
 
 class MakeMigrationsTestCase(MigrationWritingMixin, TestCase):
@@ -120,6 +123,85 @@ class MakeMigrationsTestCase(MigrationWritingMixin, TestCase):
         self.assertIn("model_name='Cake'", recalculation)
         self.assertIn("name='name_uppercased'", recalculation)
         self.assertIn("('example', '{}')".format(new[0][:-3]), recalculation)
+
+
+class CrossAppMakeMigrationsTestCase(MigrationWritingMixin, TestCase):
+    app_label = 'bakery'
+    also_migrate = ('example',)
+
+    def test_a_joining_view_carries_every_table_it_reads(self):
+        """
+        Case: Read the migration for a view whose queryset traverses relations into another app.
+        Expected: The compiled JOIN, and every table it reads recorded as a reference, including the one belonging to
+                  the other app.
+        """
+        source = self.read(self.make_migrations()[-1])
+
+        self.assertIn('INNER JOIN "example_cake"', source)
+        self.assertIn("references=('bakery_baker', 'bakery_recipe', 'example_cake')", source)
+
+    def test_a_view_built_on_another_apps_view_reads_that_view(self):
+        """
+        Case: Read the migration for a view whose queryset is another app's view's manager.
+        Expected: A SELECT against that view's table, recorded as a reference to it rather than to the models behind it.
+        """
+        source = self.read(self.make_migrations()[-1])
+
+        self.assertIn('FROM "example_cakecounts"', source)
+        self.assertIn("references=('example_cakecounts',)", source)
+
+    def test_the_view_migration_waits_for_the_app_whose_view_it_reads(self):
+        """
+        Case: Read the dependencies of the generated view migration.
+        Expected: It names the other app's view migration, not merely that app's last model migration.
+        """
+        self.make_migrations()
+        source = self.read(self.written()[-1])
+        views_migration = self.written('example')[-1][:-3]
+
+        self.assertIn('view', views_migration)
+        self.assertIn("('example', '{}')".format(views_migration), source)
+
+    def test_a_second_run_detects_nothing(self):
+        """
+        Case: Run makemigrations for both apps twice.
+        Expected: Nothing new in either app.
+        """
+        first = (self.make_migrations(), self.written('example'))
+
+        self.assertEqual((self.make_migrations(), self.written('example')), first)
+
+
+class UnmigratedAppCommandTestCase(MigrationWritingMixin, TestCase):
+    """
+    End-to-end cover for the warning: an app declaring database objects but excluded from migrations must not be
+    passed over in silence.
+    """
+
+    app_label = 'example'
+
+    def test_makemigrations_warns_for_an_unmigrated_app_with_object_changes(self):
+        """
+        Case: bakery declares views, but its migrations are disabled, and makemigrations runs for example alone.
+        Expected: An UnmigratedAppWarning naming bakery. Django deletes bakery's changes and drops the ordering other
+                  apps had onto them, reporting success, so this warning is the only trace.
+        """
+        modules = dict(self.modules)
+        modules['bakery'] = None
+
+        with override_settings(MIGRATION_MODULES=modules):
+            with self.assertWarnsRegex(UnmigratedAppWarning, 'bakery'):
+                call_command('makemigrations', 'example', verbosity=0)
+
+    def test_makemigrations_does_not_warn_for_an_app_with_a_migrations_package(self):
+        """
+        Case: The same run with every app carrying a migrations package, empty as a fresh app's would be.
+        Expected: No warning; every app's changes are written.
+        """
+        with override_settings(MIGRATION_MODULES=self.modules):
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', UnmigratedAppWarning)
+                call_command('makemigrations', 'example', verbosity=0)
 
 
 class SystemChecksTestCase(SimpleTestCase):

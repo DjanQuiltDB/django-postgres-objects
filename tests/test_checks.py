@@ -113,6 +113,19 @@ class ViewCheckTestCase(SimpleTestCase):
         self.assertEqual(errors[0].id, 'postgres_objects.E001')
         self.assertIn('models not ready', errors[0].msg)
 
+    def test_a_depends_on_naming_no_relation_is_an_error(self):
+        """
+        Case: A raw-sql declaration whose depends_on holds something that isn't a declaration, a model nor a name.
+        Expected: A tagged error.
+        """
+        declaration = declare('Uppercased', sql='SELECT 1', depends_on=[object()])
+
+        errors, _ = self.run_view_checks(declaration)
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].id, 'postgres_objects.E007')
+        self.assertIs(errors[0].obj, declaration)
+
     def test_unmanaged_views_are_not_collected(self):
         """
         Case: A project that never configured VIEWS_MODULE_PATH.
@@ -125,6 +138,46 @@ class ViewCheckTestCase(SimpleTestCase):
 
         self.assertEqual({error.id for error in errors}, {'postgres_objects.E003'})
         collect.assert_not_called()
+
+
+class SettingsKeyCheckTestCase(SimpleTestCase):
+    def run_settings_checks(self, options):
+        # The other checks in the tag react to the module paths being unset; only the keys are under test here.
+        with mock.patch('postgres_objects.checks.get_recalculating_fields', return_value=[]):
+            with override_settings(POSTGRES_OBJECTS=options):
+                return [error for error in run_checks(tags=['postgres_objects']) if error.id == 'postgres_objects.W001']
+
+    def test_a_typoed_key_is_reported_with_the_closest_known_one(self):
+        """
+        Case: POSTGRES_OBJECTS holding a misspelled key, which is never read, so the feature it meant to configure is
+              silently disabled.
+        Expected: W001 naming the unknown key, with a hint naming the closest known one.
+        """
+        warnings = self.run_settings_checks({'FUNCTION_MODULE_PATH': 'db_functions'})
+
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('FUNCTION_MODULE_PATH', warnings[0].msg)
+        self.assertIn('FUNCTIONS_MODULE_PATH', warnings[0].hint)
+
+    def test_every_unknown_key_is_reported(self):
+        """
+        Case: Two unknown keys beside a known one.
+        Expected: One W001 per unknown key, and none for the known one.
+        """
+        warnings = self.run_settings_checks(
+            {'FUNCTIONS_MODULE_PATH': 'db_functions', 'VIEW_MODULE_PATH': 'db_views', 'EXTRA': True}
+        )
+
+        self.assertEqual(len(warnings), 2)
+
+    def test_known_keys_raise_no_warning(self):
+        """
+        Case: The two documented keys, spelled as documented.
+        Expected: Nothing reported.
+        """
+        warnings = self.run_settings_checks({'FUNCTIONS_MODULE_PATH': 'db_functions', 'VIEWS_MODULE_PATH': 'db_views'})
+
+        self.assertEqual(warnings, [])
 
 
 class GeneratedFieldCheckTestCase(SimpleTestCase):

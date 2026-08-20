@@ -19,6 +19,7 @@ INSTALLED_APPS = (
     'django.contrib.contenttypes',
     'postgres_objects',
     'example',
+    'bakery',
 )
 
 DATABASES = {

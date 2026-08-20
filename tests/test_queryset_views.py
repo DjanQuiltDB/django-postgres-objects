@@ -1,5 +1,6 @@
 import pickle
 
+from bakery.models import Recipe
 from django.apps import apps
 from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
@@ -152,6 +153,45 @@ class CompiledDefinitionTestCase(SimpleTestCase):
 
         self.assertNotIn('%%', definition.sql)
         self.assertIn('%', definition.sql)
+
+    def test_the_table_a_queryset_reads_is_recorded(self):
+        """
+        Case: A queryset over one model.
+        Expected: That model's table is recorded.
+        """
+        self.assertEqual(declare('Uppercased', queryset=cake_names).references, ('example_cake',))
+
+    def test_every_table_a_join_reads_is_recorded(self):
+        """
+        Case: A queryset traversing a relation, which compiles to a JOIN.
+        Expected: Both tables are recorded.
+        """
+        declaration = declare('Credits', queryset=lambda: Recipe.objects.values('id', baker_name=F('baker__name')))
+
+        self.assertEqual(declaration.references, ('bakery_baker', 'bakery_recipe'))
+
+    def test_a_table_read_only_by_a_subquery_is_recorded(self):
+        """
+        Case: A queryset whose only mention of a model is inside a subquery.
+        Expected: The subquery model is recorded.
+        """
+        declaration = declare(
+            'Uppercased',
+            queryset=lambda: Cake.objects.values('id').filter(id__in=Recipe.objects.values('cake_id')),
+        )
+
+        self.assertEqual(declaration.references, ('bakery_recipe', 'example_cake'))
+
+    def test_a_view_reads_the_view_whose_model_its_queryset_is_built_on(self):
+        """
+        Case: A queryset over another declaration's generated model.
+        Expected: A SELECT against that view's table, and the view recorded as what it reads.
+        """
+        source = declare('Uppercased', queryset=cake_names)
+        stacked = declare('Stacked', queryset=lambda: source.objects.values('id'))
+
+        self.assertIn('FROM "example_uppercased"', stacked.definition.sql)
+        self.assertEqual(stacked.references, ('example_uppercased',))
 
     def test_a_combinator_queryset_is_refused(self):
         """

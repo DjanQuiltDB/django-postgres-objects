@@ -11,19 +11,61 @@ Two things are checked here, both of which would otherwise fail late or not at a
    misleading name. Nothing would ever complain about that, which is exactly why it is checked.
 """
 
+from difflib import get_close_matches
+
 from django.apps import apps
-from django.core.checks import Error, register
+from django.core.checks import Error, Warning, register
 
 from postgres_objects.fields import GeneratedField
 from postgres_objects.functions import Function
-from postgres_objects.registry import get_declared_objects, get_functions_module, get_views_module
-from postgres_objects.views import View
+from postgres_objects.registry import get_declared_objects, get_functions_module, get_options, get_views_module
+from postgres_objects.views import View, resolve_reference
+
+#: Every key the POSTGRES_OBJECTS dict is read for.
+KNOWN_OPTIONS = ('FUNCTIONS_MODULE_PATH', 'VIEWS_MODULE_PATH')
+
+
+@register('postgres_objects')
+def check_settings_keys(app_configs, **kwargs):
+    """
+    Report every unknown key in the POSTGRES_OBJECTS dict.
+
+    A typo there fails nothing on its own: the key is simply never read, so the feature it meant to configure is
+    silently disabled. A warning rather than a startup error, so an existing integration keeps booting.
+    """
+    options = get_options()
+    if not isinstance(options, dict):
+        # AppConfig.ready refuses anything but a dict outright, so there are no keys to look at here.
+        return []
+
+    warnings = []
+
+    for key in sorted(options):
+        if key in KNOWN_OPTIONS:
+            continue
+
+        # cutoff=0 so there is always a closest key to point at, however far off the unknown one is.
+        closest = get_close_matches(key, KNOWN_OPTIONS, n=1, cutoff=0)[0]
+        warnings.append(
+            Warning(
+                "POSTGRES_OBJECTS contains the unknown key '{}', which is never read, so whatever it was meant to "
+                'configure stays disabled.'.format(key),
+                hint="Did you mean '{}'?".format(closest),
+                id='postgres_objects.W001',
+            )
+        )
+
+    return warnings
 
 
 @register('postgres_objects')
 def check_view_declarations(app_configs, **kwargs):
     """
     Build every queryset-declared view's definition and model, reporting what (if anything) raises.
+
+    depends_on is resolved for both body flavours, since it is the only thing about a raw-sql declaration that this
+    package can be wrong about, and an entry naming nothing would otherwise surface as a missing ordering rather than as
+    a mistake.
     """
     module_path = get_views_module()
     if not module_path:
@@ -32,6 +74,18 @@ def check_view_declarations(app_configs, **kwargs):
     errors = []
 
     for declaration in get_declared_objects(module_path, kind=View).values():
+        try:
+            for reference in declaration.depends_on:
+                resolve_reference(reference)
+        except Exception as error:  # noqa: BLE001 - reported, not swallowed
+            errors.append(
+                Error(
+                    'The view declaration depends on something that names no relation: {}'.format(error),
+                    obj=declaration,
+                    id='postgres_objects.E007',
+                )
+            )
+
         if declaration.sql and not declaration.queryset:
             # A raw-sql declaration has nothing to compile and no model to build; whether its SQL holds up is for
             # Postgres to say at migrate time.

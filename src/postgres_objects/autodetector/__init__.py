@@ -6,10 +6,16 @@ from its generated graph, and adds on logic for our declared objects, so we avoi
 for our custom objects.
 """
 
-from postgres_objects.autodetector.changes import get_migrated_objects, get_object_changes, get_ordered_nodes
+from postgres_objects.autodetector.changes import (
+    MigratedObject,
+    get_migrated_objects,
+    get_object_changes,
+    get_ordered_nodes,
+)
 from postgres_objects.autodetector.detector import (
     DeclarativeObjectAutodetector,
     DeclarativeObjectAutodetectorMixin,
+    UnmigratedAppWarning,
     build_migration,
 )
 from postgres_objects.autodetector.wiring import compose, get_autodetector, patch_migrations
@@ -17,6 +23,8 @@ from postgres_objects.autodetector.wiring import compose, get_autodetector, patc
 __all__ = [
     'DeclarativeObjectAutodetector',
     'DeclarativeObjectAutodetectorMixin',
+    'MigratedObject',
+    'UnmigratedAppWarning',
     'build_migration',
     'compose',
     'get_autodetector',
