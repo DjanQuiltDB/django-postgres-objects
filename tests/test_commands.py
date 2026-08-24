@@ -1,5 +1,8 @@
+from unittest import mock
+
 from django.core.management import call_command, get_commands
 from django.test import SimpleTestCase, TestCase
+from example.db_functions import AllUppercase
 from migration_writing import MigrationWritingMixin
 
 
@@ -82,6 +85,27 @@ class MakeMigrationsTestCase(MigrationWritingMixin, TestCase):
         first = self.make_migrations()
 
         self.assertEqual(self.make_migrations(), first)
+
+    def test_a_body_change_writes_a_recalculation_behind_the_alteration(self):
+        """
+        Case: Edit the body of the function the example model's generated column calls, and run makemigrations again.
+        Expected: An AlterFunction migration plus a trailing migration recalculating the column, the latter depending on
+                  the former, so the rewrite always sees the new body.
+        """
+        first = self.make_migrations()
+
+        with mock.patch.object(AllUppercase, 'body', 'BEGIN RETURN LOWER(input); END;'):
+            written = self.make_migrations()
+
+        new = [name for name in written if name not in first]
+        self.assertEqual(len(new), 2, new)
+
+        alteration, recalculation = (self.read(name) for name in new)
+        self.assertIn('AlterFunction', alteration)
+        self.assertIn('RecalculateGeneratedField', recalculation)
+        self.assertIn("model_name='Cake'", recalculation)
+        self.assertIn("name='name_uppercased'", recalculation)
+        self.assertIn("('example', '{}')".format(new[0][:-3]), recalculation)
 
 
 class SystemChecksTestCase(SimpleTestCase):

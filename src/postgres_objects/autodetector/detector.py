@@ -39,7 +39,7 @@ class DeclarativeObjectAutodetectorMixin:
         if graph is None or not any(get_module() for _, _, get_module in KINDS):
             return changes
 
-        leading, trailing = get_object_changes(graph)
+        leading, trailing = get_object_changes(graph, self.from_state, self.to_state)
 
         # Each app's first migration as Django detected it, before anything is spliced in front of it.
         first_model_migration = {

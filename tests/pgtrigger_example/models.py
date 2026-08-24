@@ -3,6 +3,7 @@ from django.db import models
 from django.db.models import F
 
 from pgtrigger_example.db_functions import AllUppercase
+from postgres_objects import GeneratedField
 
 
 class Note(models.Model):
@@ -11,7 +12,7 @@ class Note(models.Model):
     """
 
     text = models.CharField(max_length=128)
-    text_uppercased = models.GeneratedField(
+    text_uppercased = GeneratedField(
         expression=AllUppercase(F('text')),
         output_field=models.TextField(),
         db_persist=True,

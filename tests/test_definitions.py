@@ -305,3 +305,160 @@ class PlanChangeTestCase(SimpleTestCase):
         current = declare('Doubled', arguments='input INT', returns='INT').definition
 
         self.assertIs(current.plan_change_from(previous), Change.SUPERSEDE)
+
+    def test_an_added_default_clause_is_an_alter(self):
+        """
+        Case: The same parameter with a default clause added.
+        Expected: ALTER. Postgres identifies a function by its input types, so this is still the same function, and a
+                  superseding trailing drop would destroy what the leading create just wrote.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments="input TEXT DEFAULT ''").definition
+
+        self.assertIs(current.plan_change_from(previous), Change.ALTER)
+
+    def test_a_whitespace_only_argument_change_is_an_alter(self):
+        """
+        Case: The argument list reformatted, changing nothing Postgres can see.
+        Expected: ALTER, not a supersede whose trailing drop would resolve to the function itself.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments='input   TEXT').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.ALTER)
+
+    def test_a_case_only_argument_change_is_an_alter(self):
+        """
+        Case: The argument list recased, which Postgres folds to the same identifiers and types.
+        Expected: ALTER, since the identity is unchanged.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments='INPUT text').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.ALTER)
+
+    def test_a_spelled_out_in_mode_is_an_alter(self):
+        """
+        Case: The default IN mode written out explicitly.
+        Expected: ALTER. IN is what an unmarked parameter already means.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments='IN input TEXT').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.ALTER)
+
+    def test_a_renamed_parameter_is_a_replace(self):
+        """
+        Case: A parameter renamed, its type untouched.
+        Expected: REPLACE. The identity is unchanged so a supersede would drop the new copy, and CREATE OR REPLACE
+                  refuses to change a parameter name, so the old function has to be dropped first.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments='source TEXT').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.REPLACE)
+
+    def test_a_name_added_to_an_unnamed_parameter_is_a_replace(self):
+        """
+        Case: A previously unnamed parameter gains a name.
+        Expected: REPLACE, treated like any other parameter naming change rather than risking the supersede shape.
+        """
+        previous = declare('Doubled', arguments='TEXT').definition
+        current = declare('Doubled').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.REPLACE)
+
+    def test_a_cosmetic_argument_change_with_a_new_return_type_is_a_replace(self):
+        """
+        Case: A default clause added and the return type changed in the same edit.
+        Expected: REPLACE. The identity is unchanged so the return-type rule applies, where the raw signature comparison
+                  used to fall through to the destructive supersede.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments="input TEXT DEFAULT ''", returns='INT').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.REPLACE)
+
+    def test_a_case_only_return_type_change_is_an_alter(self):
+        """
+        Case: The return type recased.
+        Expected: ALTER; text and TEXT are the same type, so there is nothing CREATE OR REPLACE would refuse.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', returns='text').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.ALTER)
+
+    def test_a_changed_parameter_type_of_the_same_count_supersedes(self):
+        """
+        Case: One parameter's type changed, the argument count untouched.
+        Expected: SUPERSEDE. A different input type is a genuine overload, guarding the identity heuristic against
+                  over-matching.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments='input INT').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.SUPERSEDE)
+
+    def test_a_case_change_inside_a_quoted_type_supersedes(self):
+        """
+        Case: The case of a quoted type name changed.
+        Expected: SUPERSEDE; quoted identifiers are case-sensitive, so this is a different type and a real overload.
+        """
+        previous = declare('Doubled', arguments='input "MyType"').definition
+        current = declare('Doubled', arguments='input "mytype"').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.SUPERSEDE)
+
+    def test_an_added_out_parameter_with_a_new_return_type_is_a_replace(self):
+        """
+        Case: An OUT parameter added, which changes what the function returns.
+        Expected: REPLACE. OUT parameters are not inputs, so the identity is unchanged and a superseding trailing drop
+                  would resolve to the function the leading create just wrote.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', arguments='input TEXT, OUT result TEXT', returns='RECORD').definition
+
+        self.assertIs(current.plan_change_from(previous), Change.REPLACE)
+
+
+class AltersComputedValuesTestCase(SimpleTestCase):
+    def test_a_changed_body_alters_computed_values(self):
+        """
+        Case: The same function with a new body.
+        Expected: Reported as changing what the function computes.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', body='BEGIN RETURN LOWER(input); END;').definition
+
+        self.assertIs(current.alters_computed_values_from(previous), True)
+
+    def test_a_changed_strictness_alters_computed_values(self):
+        """
+        Case: The same body, but STRICT toggled.
+        Expected: Reported as a value change, since STRICT changes what NULL input produces.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', strict=True).definition
+
+        self.assertIs(current.alters_computed_values_from(previous), True)
+
+    def test_a_changed_language_alters_computed_values(self):
+        """
+        Case: The same body text in a different language.
+        Expected: Reported as a value change; the same text means something else to another interpreter.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', language='sql', body='SELECT input;').definition
+
+        self.assertIs(current.alters_computed_values_from(previous), True)
+
+    def test_a_modifier_only_change_does_not(self):
+        """
+        Case: Only the volatility and parallel safety change.
+        Expected: Not a value change, so nothing downstream is rewritten for it.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', volatility='IMMUTABLE', parallel='SAFE').definition
+
+        self.assertIs(current.alters_computed_values_from(previous), False)

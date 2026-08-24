@@ -1,12 +1,14 @@
 from unittest import mock
 
 from django.core.management.commands import makemigrations, migrate
+from django.db import models
 from django.db.migrations.autodetector import MigrationAutodetector
 from django.db.migrations.graph import MigrationGraph
-from django.db.migrations.state import ProjectState
+from django.db.migrations.state import ModelState, ProjectState
+from django.db.models import F
 from django.test import SimpleTestCase, override_settings
 
-from postgres_objects import Function, View
+from postgres_objects import Function, GeneratedField, MaterializedView, View
 from postgres_objects.autodetector import (
     DeclarativeObjectAutodetector,
     DeclarativeObjectAutodetectorMixin,
@@ -18,7 +20,15 @@ from postgres_objects.autodetector import (
     get_ordered_nodes,
     patch_migrations,
 )
-from postgres_objects.operations import AddFunction, AddView, AlterFunction, RemoveFunction, RemoveView
+from postgres_objects.operations import (
+    AddFunction,
+    AddView,
+    AlterFunction,
+    RecalculateGeneratedField,
+    RefreshMaterializedView,
+    RemoveFunction,
+    RemoveView,
+)
 
 MODULE_PATH = 'db_functions'
 
@@ -29,6 +39,7 @@ def declare(class_name, **attrs):
         'arguments': 'input TEXT',
         'returns': 'TEXT',
         'body': 'BEGIN RETURN input; END;',
+        'output_field': models.TextField(),
     }
     namespace.update(attrs)
 
@@ -184,6 +195,15 @@ class GetMigratedObjectsTestCase(SimpleTestCase):
         Expected: Nothing is recorded, so folding the graph is safe on any project's migrations.
         """
         graph = build_graph(migration_with('example', '0001', mock.Mock()))
+
+        self.assertEqual(get_migrated_objects(graph), {})
+
+    def test_a_recalculation_is_ignored(self):
+        """
+        Case: A graph containing a RecalculateGeneratedField.
+        Expected: Nothing is recorded, since the operation changes stored values without changing any definition.
+        """
+        graph = build_graph(migration_with('example', '0001', RecalculateGeneratedField('GenModel', 'name_uppercased')))
 
         self.assertEqual(get_migrated_objects(graph), {})
 
@@ -477,6 +497,281 @@ class ViewPlacementTestCase(SimpleTestCase):
         )
 
 
+def project_state(app_label='example', field=None, extra_fields=()):
+    """
+    A project state holding one model, optionally carrying a generated column, the way the autodetector receives the
+    before and after states.
+    """
+    fields = [('id', models.AutoField(primary_key=True)), ('name', models.TextField())]
+    fields.extend(extra_fields)
+    if field is not None:
+        fields.append(('name_uppercased', field))
+
+    state = ProjectState()
+    state.add_model(ModelState(app_label, 'GenModel', fields))
+
+    return state
+
+
+def generated(declaration, **kwargs):
+    kwargs.setdefault('db_persist', True)
+
+    return GeneratedField(expression=declaration(F('name')), output_field=models.TextField(), **kwargs)
+
+
+class RecalculationTestCase(SimpleTestCase):
+    """
+    A stored generated column holds what the function computed when its row was written, so a change to what the
+    function computes has to be followed by a rewrite of every table that opted in through the wrapper field.
+    """
+
+    def changes(self, declared, graph, from_state=None, to_state=None):
+        with mock.patch(
+            'postgres_objects.autodetector.changes.get_declarations',
+            return_value={(d.resolved_app_label, d.definition.kind, d.name): d for d in declared},
+        ):
+            return get_object_changes(graph, from_state, to_state)
+
+    def altered_body(self):
+        """
+        The migrated declaration and the edited one: same signature, new body.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', body='BEGIN RETURN input || input; END;')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+
+        return current, graph
+
+    def test_a_changed_body_recalculates_a_dependent_column(self):
+        """
+        Case: The body of a function called by a wrapper field's expression changes.
+        Expected: A RecalculateGeneratedField for that column in the model app's trailing set.
+        """
+        current, graph = self.altered_body()
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        recalculation = trailing['example'][0]
+        self.assertIsInstance(recalculation, RecalculateGeneratedField)
+        self.assertEqual((recalculation.model_name, recalculation.name), ('GenModel', 'name_uppercased'))
+
+    def test_the_recalculation_comes_before_other_trailing_operations(self):
+        """
+        Case: The body change happens in the same run as a function removal, which also trails.
+        Expected: The recalculation comes first; a trailing create such as a materialized view snapshots data, so
+                  everything downstream has to see recomputed values.
+        """
+        current, _ = self.altered_body()
+        leftover = declare('Leftover')
+        nodes = {}
+        nodes.update(migration_with('example', '0001', AddFunction(declare('Doubled').definition)))
+        nodes.update(
+            migration_with('example', '0002', AddFunction(leftover.definition), dependencies=[('example', '0001')])
+        )
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], build_graph(nodes), state, state)
+
+        self.assertIsInstance(trailing['example'][0], RecalculateGeneratedField)
+        self.assertIsInstance(trailing['example'][1], RemoveFunction)
+
+    def test_a_modifier_only_change_recalculates_nothing(self):
+        """
+        Case: Only the volatility and parallel safety of the function change.
+        Expected: No recalculation, since a promise to the planner cannot change a stored value. Rewriting the whole
+                  table for one would be a serious surprise.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', volatility='IMMUTABLE', parallel='SAFE')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertEqual(trailing, {})
+
+    def test_a_strictness_change_recalculates(self):
+        """
+        Case: The function's STRICT flag flips, with the body untouched.
+        Expected: A recalculation, since STRICT changes what NULL input produces.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', strict=True)
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertIsInstance(trailing['example'][0], RecalculateGeneratedField)
+
+    def test_a_returns_only_change_recalculates_nothing(self):
+        """
+        Case: Only the function's return type changes, its body untouched.
+        Expected: No recalculation, since an unchanged body computes unchanged values.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', returns='INT')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertEqual([type(operation) for operation in trailing.get('example', [])], [])
+
+    def test_a_replace_with_a_changed_body_recalculates(self):
+        """
+        Case: The return type and the body change together, which is a drop and recreate.
+        Expected: A recalculation.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', returns='INT', body='BEGIN RETURN 1; END;')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertIsInstance(trailing['example'][0], RecalculateGeneratedField)
+
+    def test_a_supersede_with_a_changed_body_recalculates_before_the_drop(self):
+        """
+        Case: The argument list and the body change together, so the new overload supersedes the old one.
+        Expected: A recalculation, and it precedes the trailing removal: SET EXPRESSION re-resolves the column's
+                  expression, rebinding it onto the new overload so the drop of the old one is no longer blocked.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', arguments='input TEXT, suffix TEXT', body='BEGIN RETURN input || suffix; END;')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertIsInstance(trailing['example'][0], RecalculateGeneratedField)
+        self.assertIsInstance(trailing['example'][1], RemoveFunction)
+
+    def test_an_explicit_dependency_recalculates_across_a_replace(self):
+        """
+        Case: A recalculate_on dependant of a function whose return type and body change together.
+        Expected: A recalculation. This dependency does not block the replace's drop, so without the rewrite the
+                  column would silently keep values the old body computed.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', returns='INT', body='BEGIN RETURN 1; END;')
+        unrelated = declare('Unrelated')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+        state = project_state(field=generated(unrelated, recalculate_on=('example_doubled',)))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertIsInstance(trailing['example'][0], RecalculateGeneratedField)
+
+    def test_a_body_change_beside_an_added_default_recalculates(self):
+        """
+        Case: The body changes in the same edit that adds a defaulted parameter.
+        Expected: A recalculation. Neither the in-place alter this now plans as, nor the supersede the raw signature
+                  comparison used to plan, rewrites the column by itself: its expression deconstructs identically.
+        """
+        previous = declare('Doubled')
+        current = declare('Doubled', arguments="input TEXT DEFAULT ''", body='BEGIN RETURN input || input; END;')
+        graph = build_graph(migration_with('example', '0001', AddFunction(previous.definition)))
+        state = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertIsInstance(trailing['example'][0], RecalculateGeneratedField)
+
+    def test_a_plain_generated_field_is_left_alone(self):
+        """
+        Case: The model uses Django's own GeneratedField rather than the wrapper.
+        Expected: No recalculation. The rewrite is opt-in, since it takes an exclusive lock on the whole table.
+        """
+        current, graph = self.altered_body()
+        field = models.GeneratedField(expression=current(F('name')), output_field=models.TextField(), db_persist=True)
+        state = project_state(field=field)
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertEqual(trailing, {})
+
+    def test_a_virtual_column_is_left_alone(self):
+        """
+        Case: A wrapper field that is not stored.
+        Expected: No recalculation, since values computed on read can never go stale.
+        """
+        current, graph = self.altered_body()
+        state = project_state(field=generated(current, db_persist=False))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertEqual(trailing, {})
+
+    def test_an_explicit_dependency_recalculates(self):
+        """
+        Case: The column's expression does not call the changed function; recalculate_on names it, standing in for a
+              function called from inside another function's body.
+        Expected: A recalculation, since the expression cannot show this dependency itself.
+        """
+        current, graph = self.altered_body()
+        unrelated = declare('Unrelated')
+        state = project_state(field=generated(unrelated, recalculate_on=('example_doubled',)))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertIsInstance(trailing['example'][0], RecalculateGeneratedField)
+
+    def test_a_column_being_added_is_not_recalculated(self):
+        """
+        Case: The column does not exist in the previous state; it is being added in this very run.
+        Expected: No recalculation, since the ADD COLUMN computes every row with the new body already.
+        """
+        current, graph = self.altered_body()
+        before = project_state()
+        after = project_state(field=generated(current))
+
+        _, trailing = self.changes([current], graph, before, after)
+
+        self.assertEqual(trailing, {})
+
+    def test_a_column_being_removed_is_not_recalculated(self):
+        """
+        Case: The column is in the previous state but gone from the new one.
+        Expected: No recalculation, since there is nothing left to recompute once the model migrations have run.
+        """
+        current, graph = self.altered_body()
+        before = project_state(field=generated(current))
+        after = project_state()
+
+        _, trailing = self.changes([current], graph, before, after)
+
+        self.assertEqual(trailing, {})
+
+    def test_the_recalculation_lands_in_the_models_app(self):
+        """
+        Case: The function is declared in one app and the model lives in another.
+        Expected: The recalculation is keyed by the model's app, whose trailing migration is what waits for every other
+                  app's object migrations.
+        """
+        current, graph = self.altered_body()
+        state = project_state(app_label='other', field=generated(current))
+
+        _, trailing = self.changes([current], graph, state, state)
+
+        self.assertIsInstance(trailing['other'][0], RecalculateGeneratedField)
+        self.assertNotIn('example', trailing)
+
+    def test_without_states_no_recalculation_is_attempted(self):
+        """
+        Case: get_object_changes called with the graph alone, as older callers do.
+        Expected: The change detection works as before, with no recalculations.
+        """
+        current, graph = self.altered_body()
+
+        leading, trailing = self.changes([current], graph)
+
+        self.assertIsInstance(leading['example'][0], AlterFunction)
+        self.assertEqual(trailing, {})
+
+
 class SplicingTestCase(SimpleTestCase):
     def detect(self, leading, trailing, changes):
         autodetector = DeclarativeObjectAutodetector(ProjectState(), ProjectState())
@@ -540,6 +835,26 @@ class SplicingTestCase(SimpleTestCase):
 
         self.assertEqual(len(result['example']), 1)
         self.assertEqual(result['example'][0].name, 'auto_db_objects')
+
+    def test_a_recalculation_waits_for_another_apps_function_change(self):
+        """
+        Case: A body-only change to a function in one app recalculates a column in another, with no model changes
+              anywhere.
+        Expected: The recalculating app's trailing migration depends on the function app's object migration, so the
+                  rewrite always runs after the new body is in place.
+        """
+        previous = declare('Doubled').definition
+        current = declare('Doubled', body='BEGIN RETURN input || input; END;').definition
+
+        result = self.detect(
+            {'example': [AlterFunction(current, previous)]},
+            {'other': [RecalculateGeneratedField('GenModel', 'name_uppercased')]},
+            {},
+        )
+
+        recalculation = result['other'][-1]
+        self.assertEqual(recalculation.name, 'auto_db_objects_last')
+        self.assertIn(('example', 'auto_db_objects'), recalculation.dependencies)
 
 
 class DisabledTestCase(SimpleTestCase):
@@ -607,6 +922,58 @@ class MigrationWriterTestCase(SimpleTestCase):
         self.assertEqual(written.operations[1].previous, previous)
         self.assertEqual(written.operations[2].definition, previous)
         self.assertEqual(written.operations[2].hints, {})
+
+    def test_a_recalculation_round_trips_through_the_writer(self):
+        """
+        Case: Write a migration containing a RecalculateGeneratedField and read the file back.
+        Expected: The operation reconstructs with the model, field and hints it was written with.
+        """
+        from django.db.migrations.writer import MigrationWriter
+
+        migration = build_migration(
+            'example',
+            '0001_recalc',
+            [RecalculateGeneratedField('GenModel', 'name_uppercased', hints={'target': 'ovens'})],
+        )
+
+        source = MigrationWriter(migration).as_string()
+
+        namespace = {}
+        exec(compile(source, '<migration>', 'exec'), namespace)  # noqa: S102
+        written = namespace['Migration']('0001_recalc', 'example')
+
+        operation = written.operations[0]
+        self.assertEqual(type(operation).__name__, 'RecalculateGeneratedField')
+        self.assertEqual((operation.model_name, operation.name), ('GenModel', 'name_uppercased'))
+        self.assertEqual(operation.hints, {'target': 'ovens'})
+
+    def test_a_refresh_round_trips_through_the_writer(self):
+        """
+        Case: Write a migration containing a RefreshMaterializedView and read the file back. This is the one operation
+              projects write into migrations by hand, so nothing else exercises its serialization.
+        Expected: The operation reconstructs with the definition and the CONCURRENTLY flag it was written with.
+        """
+        from django.db.migrations.writer import MigrationWriter
+
+        definition = type(MaterializedView)(
+            'Totals',
+            (MaterializedView,),
+            {'app_label': 'example', 'sql': 'SELECT id FROM example_cake', 'unique_index': ('id',)},
+        ).definition
+
+        migration = build_migration('example', '0002_refresh', [RefreshMaterializedView(definition, concurrently=True)])
+
+        source = MigrationWriter(migration).as_string()
+
+        namespace = {}
+        exec(compile(source, '<migration>', 'exec'), namespace)  # noqa: S102
+        written = namespace['Migration']('0002_refresh', 'example')
+
+        operation = written.operations[0]
+        self.assertEqual(type(operation).__name__, 'RefreshMaterializedView')
+        self.assertEqual(operation.definition, definition)
+        self.assertIs(operation.concurrently, True)
+        self.assertEqual(operation.hints, {})
 
 
 class RecordingMixin:

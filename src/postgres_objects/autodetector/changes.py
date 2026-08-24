@@ -5,6 +5,7 @@ What the migrations have created so far, what is declared right now, and the ope
 from collections import defaultdict
 
 from postgres_objects.autodetector.ordering import get_ordered_leading, get_ordered_trailing
+from postgres_objects.autodetector.recalculation import get_recalculations
 from postgres_objects.base import Change
 from postgres_objects.functions import Function
 from postgres_objects.operations import DatabaseObjectOperation
@@ -91,12 +92,14 @@ def sides_for(definition, leading, trailing):
     return trailing, leading
 
 
-def get_object_changes(graph):  # noqa: C901
+def get_object_changes(graph, from_state=None, to_state=None):  # noqa: C901
     """
     Work out the operations needed to bring the migrations in line with the declarations.
 
     Returns two dicts of operations keyed by app label: the ones that have to run before that app's model migrations,
-    and the ones that have to run after them.
+    and the ones that have to run after them. Given the project states the autodetector compares, the trailing side also
+    carries a recalculation for every stored generated column that opted in and depends on a function whose computed
+    values change; without the states that part would simply be skipped.
     """
     declared = get_declarations()
     migrated = get_migrated_objects(graph)
@@ -104,6 +107,7 @@ def get_object_changes(graph):  # noqa: C901
         (key[1], definition.db_name): (key, definition, hints) for key, (definition, hints) in migrated.items()
     }
     renamed_keys = set()
+    recalculable = set()
 
     leading = defaultdict(list)
     trailing = defaultdict(list)
@@ -130,6 +134,14 @@ def get_object_changes(graph):  # noqa: C901
         previous_definition, previous_hints = previous
         change = definition.plan_change_from(previous_definition)
 
+        # Every shape of change can leave stale values behind. A REPLACE's drop is blocked only by directly dependent
+        # columns (one depending through recalculate_on will be forgotten) and a SUPERSEDE rewrites a column only when
+        # its expression changes too, which an argument gaining a default does not. The recalculation is also what moves
+        # a column across a supersede: SET EXPRESSION re-resolves the expression, rebinding the column onto the new
+        # overload, and it runs at the head of the trailing side, ahead of the drop it unblocks.
+        if kind == 'function' and definition.alters_computed_values_from(previous_definition):
+            recalculable.add(definition.db_name.lower())
+
         if change is Change.UNCHANGED and previous_hints == hints:
             continue
 
@@ -152,7 +164,15 @@ def get_object_changes(graph):  # noqa: C901
             _, dropped_on = sides_for(definition, leading, trailing)
             dropped_on[key[0]].append(definition.remove_operation_class(definition, hints=hints))
 
+    recalculations = get_recalculations(recalculable, from_state, to_state)
+
     return (
         {app_label: get_ordered_leading(operations) for app_label, operations in leading.items()},
-        {app_label: get_ordered_trailing(operations) for app_label, operations in trailing.items()},
+        # The recalculations come first on the trailing side: a create that trails (e.g. a materialized view) snapshots
+        # data, so it has to see recomputed values. They stay out of get_ordered_trailing, which orders declared objects
+        # and rightly knows nothing about model-bound operations.
+        {
+            app_label: recalculations.get(app_label, []) + get_ordered_trailing(trailing.get(app_label, []))
+            for app_label in set(trailing) | set(recalculations)
+        },
     )
