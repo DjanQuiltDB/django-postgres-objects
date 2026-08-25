@@ -17,7 +17,7 @@ settings.configure()
 
 # -- General configuration ------------------------------------------------
 
-extensions = ['sphinx.ext.autodoc', 'sphinx.ext.coverage', 'sphinx.ext.githubpages']
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.coverage', 'sphinx.ext.githubpages', 'sphinx_rtd_theme']
 
 templates_path = ['_templates']
 
@@ -42,7 +42,7 @@ todo_include_todos = False
 
 # -- Options for HTML output ----------------------------------------------
 
-html_theme = 'alabaster'
+html_theme = 'sphinx_rtd_theme'
 
 html_static_path = ['_static']
 
