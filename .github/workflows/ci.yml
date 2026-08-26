@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -10,6 +10,9 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -24,6 +27,12 @@ jobs:
           - toxenv: py314-dj60-pg18
             postgres: "18"
           - toxenv: py314-dj60-pgtrigger
+            postgres: "17"
+          - toxenv: py314-dj61-pg17
+            postgres: "17"
+          - toxenv: py314-dj61-pg18
+            postgres: "18"
+          - toxenv: py314-dj61-pgtrigger
             postgres: "17"
     services:
       postgres:
@@ -63,6 +72,19 @@ jobs:
       - run: python -m pip install --upgrade pip 'tox>=4.21'
       - run: tox -e ruff
 
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: .pre-commit-config.yaml
+      - run: python -m pip install --upgrade pip pre-commit
+      - run: pre-commit run --all-files --show-diff-on-failure
+
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -92,3 +114,20 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  publish:
+    name: publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, lint, pre-commit, docs, build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/django-postgres-objects
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

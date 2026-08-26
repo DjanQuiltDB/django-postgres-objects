@@ -1,0 +1,16 @@
+# The sdist is what downstream packagers build and test from, so it carries the whole test project and the docs, not
+# just the importable package. Without this, setuptools' defaults ship tests/test_*.py but none of the fixture apps or
+# settings they import, and the suite in the sdist cannot run.
+
+include CHANGELOG.rst
+include LICENSE
+include README.rst
+
+recursive-include src/postgres_objects py.typed
+
+graft docs
+graft tests
+
+prune docs/_build
+global-exclude *.py[cod]
+global-exclude __pycache__

@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# The PEP 639 license expression below needs 77, which is also new enough not to want `wheel` declared here.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -30,14 +31,19 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Framework :: Django",
     "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
     "Topic :: Database",
+    "Typing :: Typed",
 ]
 dependencies = [
     "django>=6.0,<7.0",
 ]
 
 [project.urls]
+Homepage = "https://github.com/djanquiltdb/django-postgres-objects"
+Documentation = "https://django-postgres-objects.readthedocs.io/"
 Source = "https://github.com/djanquiltdb/django-postgres-objects"
+Issues = "https://github.com/djanquiltdb/django-postgres-objects/issues"
 Changelog = "https://github.com/djanquiltdb/django-postgres-objects/blob/master/CHANGELOG.rst"
 
 [project.optional-dependencies]
@@ -68,16 +74,30 @@ version = { attr = "postgres_objects.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The marker is what makes the inline annotations visible to a consumer's type checker.
+postgres_objects = ["py.typed"]
+
 [tool.tox]
 requires = ["tox>=4.21"]
-env_list = ["py314-dj60-pg17", "py314-dj60-pg18", "py314-dj60-pgtrigger", "ruff", "docs"]
+# Each Django the classifiers claim gets its own leg. A range wide enough to cover both would silently resolve to the
+# newest one and leave the older claim untested, so every dj-- factor is pinned to exactly the minor it names.
+env_list = [
+    "py314-dj60-pg17",
+    "py314-dj60-pg18",
+    "py314-dj60-pgtrigger",
+    "py314-dj61-pg17",
+    "py314-dj61-pg18",
+    "py314-dj61-pgtrigger",
+    "ruff",
+    "docs",
+]
 
 [tool.tox.env_run_base]
 description = "Run the test suite against Postgres named by DATABASE_URL"
 base_python = ["python3.14"]
 package = "editable"
 extras = ["test"]
-deps = ["Django>=6.0,<7.0"]
 change_dir = "tests"
 pass_env = ["DATABASE_URL"]
 set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default" }
@@ -95,17 +115,38 @@ commands = [
 ]
 
 [tool.tox.env.py314-dj60-pg17]
-description = "Run the test suite against PostgreSQL 17"
+description = "Run the test suite against Django 6.0 and PostgreSQL 17"
+deps = ["Django>=6.0,<6.1"]
 set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres17:5432/test_db}" }
 
 [tool.tox.env.py314-dj60-pg18]
-description = "Run the test suite against PostgreSQL 18"
+description = "Run the test suite against Django 6.0 and PostgreSQL 18"
+deps = ["Django>=6.0,<6.1"]
 set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres18:5432/test_db}" }
 
 [tool.tox.env.py314-dj60-pgtrigger]
-description = "Check that this package and django-pgtrigger share the migration commands"
-deps = ["Django>=6.0,<7.0", "django-pgtrigger>=4.17,<5"]
+description = "Check that this package and django-pgtrigger share the migration commands, on Django 6.0"
+deps = ["Django>=6.0,<6.1", "django-pgtrigger>=4.17,<5"]
 # Once per ordering of the two apps, since which is readied first decides which layers its autodetection on top.
+commands = [
+    ["python", "manage.py", "test", "test_pgtrigger", "--noinput"],
+    ["python", "manage.py", "test", "test_pgtrigger", "--noinput", "--settings=config.settings_pgtrigger_first"],
+]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings_pgtrigger", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres17:5432/test_db}" }
+
+[tool.tox.env.py314-dj61-pg17]
+description = "Run the test suite against Django 6.1 and PostgreSQL 17"
+deps = ["Django>=6.1,<6.2"]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres17:5432/test_db}" }
+
+[tool.tox.env.py314-dj61-pg18]
+description = "Run the test suite against Django 6.1 and PostgreSQL 18"
+deps = ["Django>=6.1,<6.2"]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres18:5432/test_db}" }
+
+[tool.tox.env.py314-dj61-pgtrigger]
+description = "Check that this package and django-pgtrigger share the migration commands, on Django 6.1"
+deps = ["Django>=6.1,<6.2", "django-pgtrigger>=4.17,<5"]
 commands = [
     ["python", "manage.py", "test", "test_pgtrigger", "--noinput"],
     ["python", "manage.py", "test", "test_pgtrigger", "--noinput", "--settings=config.settings_pgtrigger_first"],
@@ -126,7 +167,6 @@ commands = [
 [tool.tox.env.docs]
 description = "Build the documentation"
 extras = ["docs"]
-deps = ["Django>=6.0,<7.0"]
 change_dir = "{tox_root}"
 commands = [["sphinx-build", "-b", "html", "-W", "docs", "docs/_build/html"]]
 
@@ -137,6 +177,9 @@ extras = []
 deps = ["build", "twine"]
 change_dir = "{tox_root}"
 commands = [
+    # `build` leaves whatever is already in dist/ alone, and the twine check below globs the whole directory, so an
+    # earlier version's artefacts would be checked here and uploaded by a later `twine upload dist/*`.
+    ["python", "-c", "import shutil; shutil.rmtree('dist', ignore_errors=True)"],
     ["python", "-m", "build"],
     ["twine", "check", "dist/*"],
 ]
@@ -147,6 +190,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
+fail_under = 97
 exclude_also = [
     "raise NotImplementedError",
 ]

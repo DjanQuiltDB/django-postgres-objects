@@ -8,15 +8,18 @@ BIN    := $(VENV)/bin
 PG17 ?= postgresql://postgres:postgres@localhost:5443/test_db
 PG18 ?= postgresql://postgres:postgres@localhost:5445/test_db
 
+# Every Django minor the classifiers claim. Each has its own pinned tox factor.
+DJANGOS ?= dj60 dj61
+
 .PHONY: help venv test test-pg17 test-pg18 test-pgtrigger lint format docs build clean databases docker-test
 
 help:
 	@echo 'venv         Create $(VENV) and install the package with its dev extras'
 	@echo 'databases    Start the Postgres containers the tests need'
-	@echo 'test         Run the suite against both Postgres versions, plus the pgtrigger compatibility checks'
-	@echo 'test-pg17    Run the suite against PostgreSQL 17 only'
-	@echo 'test-pg18    Run the suite against PostgreSQL 18 only'
-	@echo 'test-pgtrigger  Run the django-pgtrigger compatibility checks only'
+	@echo 'test         Run the suite against every Django and Postgres version, plus the pgtrigger checks'
+	@echo 'test-pg17    Run the suite against PostgreSQL 17 only, on every Django'
+	@echo 'test-pg18    Run the suite against PostgreSQL 18 only, on every Django'
+	@echo 'test-pgtrigger  Run the django-pgtrigger compatibility checks only, on every Django'
 	@echo 'lint         Check linting and formatting'
 	@echo 'format       Apply formatting and safe lint fixes'
 	@echo 'docs         Build the documentation'
@@ -37,13 +40,13 @@ databases:
 test: test-pg17 test-pg18 test-pgtrigger
 
 test-pg17: venv
-	DATABASE_URL=$(PG17) $(BIN)/tox -e py314-dj60-pg17
+	DATABASE_URL=$(PG17) $(BIN)/tox -e $(shell echo $(DJANGOS) | tr ' ' '\n' | sed 's/^/py314-/;s/$$/-pg17/' | paste -sd,)
 
 test-pg18: venv
-	DATABASE_URL=$(PG18) $(BIN)/tox -e py314-dj60-pg18
+	DATABASE_URL=$(PG18) $(BIN)/tox -e $(shell echo $(DJANGOS) | tr ' ' '\n' | sed 's/^/py314-/;s/$$/-pg18/' | paste -sd,)
 
 test-pgtrigger: venv
-	DATABASE_URL=$(PG17) $(BIN)/tox -e py314-dj60-pgtrigger
+	DATABASE_URL=$(PG17) $(BIN)/tox -e $(shell echo $(DJANGOS) | tr ' ' '\n' | sed 's/^/py314-/;s/$$/-pgtrigger/' | paste -sd,)
 
 lint: venv
 	$(BIN)/tox -e ruff
