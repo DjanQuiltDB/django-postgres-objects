@@ -1,3 +1,7 @@
+.. image:: https://raw.githubusercontent.com/DjanQuiltDB/django-postgres-objects/master/assets/icon-128.png
+    :alt: django-postgres-objects
+    :width: 128
+
 =======================
 django-postgres-objects
 =======================

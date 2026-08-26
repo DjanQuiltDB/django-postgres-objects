@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <rect width="1280" height="640" fill="#092e20"/>
+  <g transform="translate(98 192) scale(4)">
+    <path d="M19,36.5A13 4.2 0 0 0 45,36.5V45A13 4.2 0 0 1 19,45Z" fill="#0C4B33"/>
+    <path d="M19,28A13 4.2 0 0 0 45,28V36.5A13 4.2 0 0 1 19,36.5Z" fill="#1E6F50"/>
+    <path d="M19,19.5A13 4.2 0 0 0 45,19.5V28A13 4.2 0 0 1 19,28Z" fill="#31936D"/>
+    <ellipse cx="32" cy="19.5" rx="13" ry="4.2" fill="#44B78B"/>
+    <g fill="none" stroke="#FFC757" stroke-width="3.5"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M17,14Q12,14 12,22V29Q12,32 8,32Q12,32 12,35V42Q12,50 17,50"/>
+      <path d="M47,14Q52,14 52,22V29Q52,32 56,32Q52,32 52,35V42Q52,50 47,50"/>
+    </g>
+  </g>
+
+  <g font-family="Noto Sans, DejaVu Sans, Liberation Sans, sans-serif">
+    <text id="title" x="420" y="296" font-size="62" font-weight="700" fill="#ffffff">django-postgres-objects</text>
+    <rect x="423" y="328" width="170" height="5" fill="#FFC757"/>
+    <text id="tagline" x="420" y="385" font-size="31" font-weight="400" fill="#44B78B">PostgreSQL functions and views for Django</text>
+  </g>
+</svg>
