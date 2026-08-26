@@ -42,7 +42,21 @@ todo_include_todos = False
 
 html_theme = 'sphinx_rtd_theme'
 
+# The header the sidebar and the narrow-screen bar share, in the dark green the social preview card uses.
+html_theme_options = {'style_nav_header_background': '#092e20'}
+
+# docs/_templates/layout.html restyles that header; without this it is not picked up at all.
+templates_path = ['_templates']
+
 html_static_path = ['_static']
+
+# The favicon is a raster rather than the logo itself: below about 32 pixels the icon's braces thin to less than a pixel
+# and the disc seam closes up, so those sizes are rendered from assets/icon-small.svg, which is drawn for them.
+html_logo = '../assets/icon.svg'
+html_favicon = '../assets/icon-32.png'
+
+# Only to style the sidebar header the template above replaces; see the file itself.
+html_css_files = ['custom.css']
 
 
 # -- Options for HTMLHelp output ------------------------------------------

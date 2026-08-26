@@ -11,6 +11,10 @@ recursive-include src/postgres_objects py.typed
 graft docs
 graft tests
 
+# docs/conf.py points html_logo and html_favicon at ../assets, so a docs build from the sdist fails without these -- and
+# .readthedocs.yaml sets fail_on_warning, which turns a missing logo into a build failure rather than a shrug.
+graft assets
+
 prune docs/_build
 global-exclude *.py[cod]
 global-exclude __pycache__
