@@ -6,7 +6,7 @@ import re
 
 from django.db.models import Func
 
-from postgres_objects.base import Change, DeclarativeObject, DeclarativeObjectMeta, ObjectDefinition
+from postgres_objects.base import Change, DeclarativeObject, DeclarativeObjectMeta, ObjectDefinition, quote_name
 from postgres_objects.operations import AddFunction, AlterFunction, RemoveFunction
 
 FUNCTION_CREATE_SQL = """
@@ -196,12 +196,19 @@ class FunctionDefinition(ObjectDefinition):
         return '{}({})'.format(self.db_name, self.arguments)
 
     @property
+    def drop_arguments(self):
+        """
+        The argument list DROP FUNCTION identifies the function by: every parameter default clause stripped.
+        """
+        return ', '.join(strip_default_clause(argument) for argument in split_arguments(self.arguments))
+
+    @property
     def drop_signature(self):
         """
-        Signature specifically built for DROP FUNCTION (without any parameter default clauses).
+        Signature specifically built for DROP FUNCTION (without any parameter default clauses). Bare like `signature`:
+        both are identity and description strings, and only rendered SQL quotes the name.
         """
-        arguments = ', '.join(strip_default_clause(argument) for argument in split_arguments(self.arguments))
-        return '{}({})'.format(self.db_name, arguments)
+        return '{}({})'.format(self.db_name, self.drop_arguments)
 
     def create_sql(self):
         modifiers = [self.volatility]
@@ -209,8 +216,9 @@ class FunctionDefinition(ObjectDefinition):
             modifiers.append('STRICT')
         modifiers.append('PARALLEL {}'.format(self.parallel))
 
+        # Only the name is an identifier to quote; the argument list is Postgres syntax and stays verbatim.
         return FUNCTION_CREATE_SQL.format(
-            signature=self.signature,
+            signature='{}({})'.format(quote_name(self.db_name), self.arguments),
             returns=self.returns,
             body=self.body.strip(),
             language=self.language,
@@ -218,8 +226,8 @@ class FunctionDefinition(ObjectDefinition):
         )
 
     def drop_sql(self, schema_name):
-        return 'DROP FUNCTION IF EXISTS "{schema}".{signature};'.format(
-            schema=schema_name, signature=self.drop_signature
+        return 'DROP FUNCTION IF EXISTS "{schema}".{name}({arguments});'.format(
+            schema=schema_name, name=quote_name(self.db_name), arguments=self.drop_arguments
         )
 
     def is_same_identity(self, previous):

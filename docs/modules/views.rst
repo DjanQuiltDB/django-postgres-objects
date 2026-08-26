@@ -37,6 +37,10 @@ Three more control naming rather than behaviour, and all three are optional:
 ``db_name``     Overrides the identifier the view is created under, otherwise ``'{app_label}_{name}'``.
 =============== ============================================================================================
 
+``db_name`` follows the quoting rules of a model's ``Meta.db_table``: the stored name stays as written, and every
+rendered statement quotes it. A lowercase name is unaffected, a name carrying an uppercase letter becomes a
+case-sensitive identifier, and a name already wrapped in double quotes passes through as is.
+
 
 Declaring the body as a queryset
 --------------------------------

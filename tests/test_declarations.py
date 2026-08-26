@@ -6,7 +6,7 @@ from example.more_functions import InheritedBody
 from outside_app_fixture import Homeless, ReusableBody
 
 from postgres_objects import Function
-from postgres_objects.base import MAX_IDENTIFIER_LENGTH
+from postgres_objects.base import MAX_IDENTIFIER_LENGTH, quote_name
 
 
 class NameResolutionTestCase(SimpleTestCase):
@@ -183,6 +183,29 @@ class InstantiationTestCase(SimpleTestCase):
             Whatever()
 
         self.assertIn('definition', str(caught.exception))
+
+
+class QuoteNameTestCase(SimpleTestCase):
+    def test_a_bare_name_is_wrapped(self):
+        """
+        Case: The generated, lowercase kind of name.
+        Expected: Wrapped in double quotes, which Postgres reads as the same identifier the bare spelling folds to.
+        """
+        self.assertEqual(quote_name('example_totals'), '"example_totals"')
+
+    def test_case_is_preserved(self):
+        """
+        Case: A mixed-case name.
+        Expected: Wrapped verbatim, making the identifier case-sensitive like a mixed-case db_table.
+        """
+        self.assertEqual(quote_name('MyTotals'), '"MyTotals"')
+
+    def test_an_already_quoted_name_passes_through(self):
+        """
+        Case: A name already wrapped in quotes.
+        Expected: Unchanged. Quoting once is enough, mirroring Django's own quote_name.
+        """
+        self.assertEqual(quote_name('"pinned"'), '"pinned"')
 
 
 class FunctionValidationTestCase(SimpleTestCase):

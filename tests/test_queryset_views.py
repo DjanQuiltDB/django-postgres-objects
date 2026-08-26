@@ -13,6 +13,7 @@ from django.test import SimpleTestCase, TransactionTestCase
 from example.models import BundtOrder, Cake
 
 from postgres_objects import Change, MaterializedView, View, ViewDefinition
+from postgres_objects.base import quote_name
 from postgres_objects.operations import AddView, RefreshMaterializedView
 
 APP_LABEL = 'example'
@@ -548,7 +549,8 @@ class QuerysetViewOperationTestCase(TransactionTestCase):
         with connection.cursor() as cursor:
             for definition in self._created:
                 statement = 'DROP MATERIALIZED VIEW' if definition.materialized else 'DROP VIEW'
-                cursor.execute('{} IF EXISTS {} CASCADE;'.format(statement, definition.db_name))
+                # Quoted like the library quotes it, so a mixed-case name is cleaned up rather than missed.
+                cursor.execute('{} IF EXISTS {} CASCADE;'.format(statement, quote_name(definition.db_name)))
 
     def apply(self, operation, backwards=False):
         self._created.append(operation.definition)

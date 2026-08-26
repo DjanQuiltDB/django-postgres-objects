@@ -22,6 +22,22 @@ from django.db.backends.utils import truncate_name
 MAX_IDENTIFIER_LENGTH = 63
 
 
+def quote_name(name):
+    """
+    Quote one identifier for rendered SQL, exactly as Django's postgresql backend quotes Meta.db_table: a name already
+    wrapped in double quotes passes through, anything else is wrapped once. Like the backend's, this needs no
+    connection (Postgres quoting has no per-connection state) which is what lets definitions render SQL without one.
+
+    The stored db_name stays bare everywhere; only rendering quotes it. A lowercase name is unaffected (Postgres folds
+    the bare spelling to the same identifier), while a mixed-case one becomes case-sensitive, like a mixed-case
+    db_table.
+    """
+    if name.startswith('"') and name.endswith('"'):
+        return name
+
+    return '"{}"'.format(name)
+
+
 def freeze(value):
     """
     Make a deconstructed field value hashable: dicts become tuples of their sorted items, lists and tuples become

@@ -6,7 +6,7 @@ from types import FunctionType
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import DEFAULT_DB_ALIAS, connections, router
-from django.db.backends.utils import truncate_name
+from django.db.backends.utils import strip_quotes, truncate_name
 from django.db.models import Model
 
 from postgres_objects.base import (
@@ -15,6 +15,7 @@ from postgres_objects.base import (
     DeclarativeObject,
     DeclarativeObjectMeta,
     ObjectDefinition,
+    quote_name,
 )
 from postgres_objects.operations import AddView, RemoveView
 from postgres_objects.querysets import build_model, compile_queryset
@@ -46,7 +47,7 @@ def build_refresh_sql(db_name, unique_index, concurrently=False):
     """
     check_refresh(db_name, unique_index, concurrently)
 
-    return REFRESH_SQL.format(concurrently=' CONCURRENTLY' if concurrently else '', db_name=db_name)
+    return REFRESH_SQL.format(concurrently=' CONCURRENTLY' if concurrently else '', db_name=quote_name(db_name))
 
 
 def resolve_reference(reference):
@@ -109,7 +110,7 @@ class ViewDefinition(ObjectDefinition):
 
     def create_sql(self):
         return VIEW_CREATE_SQL.format(
-            db_name=self.db_name,
+            db_name=quote_name(self.db_name),
             options=format_options(self.options),
             sql=self.sql.strip().rstrip(';'),
         )
@@ -117,7 +118,7 @@ class ViewDefinition(ObjectDefinition):
     def drop_sql(self, schema_name):
         # No CASCADE: dropping whatever was built on top of this view would take with it an object that nothing here
         # would ever recreate. An ordering mistake should raise instead.
-        return 'DROP VIEW IF EXISTS "{schema}".{db_name};'.format(schema=schema_name, db_name=self.db_name)
+        return 'DROP VIEW IF EXISTS "{schema}".{db_name};'.format(schema=schema_name, db_name=quote_name(self.db_name))
 
     def plan_change_from(self, previous):
         """
@@ -147,25 +148,26 @@ class MaterializedViewDefinition(ViewDefinition):
     materialized = True
 
     def index_name(self, columns, unique):
+        # strip_quotes so a pre-quoted db_name cannot embed quote characters into the index's own identifier.
         return truncate_name(
-            '{}_{}_{}'.format(self.db_name, '_'.join(columns), 'key' if unique else 'idx'), MAX_IDENTIFIER_LENGTH
+            '{}_{}_{}'.format(strip_quotes(self.db_name), '_'.join(columns), 'key' if unique else 'idx'),
+            MAX_IDENTIFIER_LENGTH,
         )
 
     def index_sql(self, columns, unique):
-        # The columns are quoted because a compiled queryset quotes its aliases: a mixed-case alias is created exactly
-        # as written, and bare in the CREATE INDEX it would fold to lowercase and miss. The index name is quoted for
-        # the same reason, since the column names are part of it. The view's own db_name stays bare, matching how the
-        # CREATE and DROP of the view itself name it.
-        return 'CREATE{unique} INDEX IF NOT EXISTS "{name}" ON {db_name} ({columns});'.format(
+        # Everything here is quoted: a compiled queryset quotes its aliases, so a mixed-case column alias is created
+        # exactly as written and bare in the CREATE INDEX it would fold to lowercase and miss; the index name carries
+        # those column names; and the view's own db_name is quoted the way the CREATE and DROP of the view name it.
+        return 'CREATE{unique} INDEX IF NOT EXISTS {name} ON {db_name} ({columns});'.format(
             unique=' UNIQUE' if unique else '',
-            name=self.index_name(columns, unique),
-            db_name=self.db_name,
+            name=quote_name(self.index_name(columns, unique)),
+            db_name=quote_name(self.db_name),
             columns=', '.join('"{}"'.format(column) for column in columns),
         )
 
     def create_sql(self):
         return MATERIALIZED_VIEW_CREATE_SQL.format(
-            db_name=self.db_name,
+            db_name=quote_name(self.db_name),
             options=format_options(self.options),
             sql=self.sql.strip().rstrip(';'),
             with_data='' if self.with_data else ' WITH NO DATA',
@@ -189,7 +191,9 @@ class MaterializedViewDefinition(ViewDefinition):
         return tuple(statements)
 
     def drop_sql(self, schema_name):
-        return 'DROP MATERIALIZED VIEW IF EXISTS "{schema}".{db_name};'.format(schema=schema_name, db_name=self.db_name)
+        return 'DROP MATERIALIZED VIEW IF EXISTS "{schema}".{db_name};'.format(
+            schema=schema_name, db_name=quote_name(self.db_name)
+        )
 
     def check_refresh(self, concurrently):
         """

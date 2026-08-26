@@ -171,7 +171,17 @@ class CreateSqlTestCase(SimpleTestCase):
 
         self.assertEqual(
             definition.drop_sql('some_schema'),
-            'DROP FUNCTION IF EXISTS "some_schema".example_doubled(input TEXT);',
+            'DROP FUNCTION IF EXISTS "some_schema"."example_doubled"(input TEXT);',
+        )
+
+    def test_the_create_quotes_the_name_and_not_the_arguments(self):
+        """
+        Case: The CREATE for a declared function.
+        Expected: The name is quoted like a model's db_table; the argument list stays verbatim, since it is not an
+                  identifier.
+        """
+        self.assertIn(
+            'CREATE OR REPLACE FUNCTION "example_doubled"(input TEXT)', declare('Doubled').definition.create_sql()
         )
 
 

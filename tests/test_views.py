@@ -5,6 +5,7 @@ from django.utils.connection import ConnectionDoesNotExist
 from example.models import Cake
 
 from postgres_objects import Change, MaterializedView, View, ViewDefinition
+from postgres_objects.base import quote_name
 from postgres_objects.operations import AddView, RefreshMaterializedView, RemoveView
 from postgres_objects.views import build_refresh_sql
 
@@ -45,7 +46,7 @@ class ViewSqlTestCase(SimpleTestCase):
         definition = declare('Uppercased').definition
 
         self.assertEqual(
-            definition.create_sql(), 'CREATE OR REPLACE VIEW example_uppercased AS SELECT id, name FROM example_cake;'
+            definition.create_sql(), 'CREATE OR REPLACE VIEW "example_uppercased" AS SELECT id, name FROM example_cake;'
         )
 
     def test_a_trailing_semicolon_in_the_declaration_is_not_doubled(self):
@@ -56,7 +57,7 @@ class ViewSqlTestCase(SimpleTestCase):
         definition = declare('Uppercased', sql='SELECT id FROM example_cake;').definition
 
         self.assertEqual(
-            definition.create_sql(), 'CREATE OR REPLACE VIEW example_uppercased AS SELECT id FROM example_cake;'
+            definition.create_sql(), 'CREATE OR REPLACE VIEW "example_uppercased" AS SELECT id FROM example_cake;'
         )
 
     def test_options_become_a_with_clause(self):
@@ -76,7 +77,7 @@ class ViewSqlTestCase(SimpleTestCase):
         """
         definition = declare('Uppercased').definition
 
-        self.assertEqual(definition.drop_sql('public'), 'DROP VIEW IF EXISTS "public".example_uppercased;')
+        self.assertEqual(definition.drop_sql('public'), 'DROP VIEW IF EXISTS "public"."example_uppercased";')
 
     def test_a_materialized_view_has_no_replacing_form(self):
         """
@@ -85,7 +86,7 @@ class ViewSqlTestCase(SimpleTestCase):
         """
         definition = declare('Totals', base=MaterializedView).definition
 
-        self.assertTrue(definition.create_sql().startswith('CREATE MATERIALIZED VIEW example_totals AS '))
+        self.assertTrue(definition.create_sql().startswith('CREATE MATERIALIZED VIEW "example_totals" AS '))
 
     def test_an_unpopulated_materialized_view_says_so(self):
         """
@@ -108,9 +109,11 @@ class ViewSqlTestCase(SimpleTestCase):
 
         self.assertEqual(len(statements), 3)
         self.assertEqual(
-            statements[1], 'CREATE UNIQUE INDEX IF NOT EXISTS "example_totals_name_key" ON example_totals ("name");'
+            statements[1], 'CREATE UNIQUE INDEX IF NOT EXISTS "example_totals_name_key" ON "example_totals" ("name");'
         )
-        self.assertEqual(statements[2], 'CREATE INDEX IF NOT EXISTS "example_totals_id_idx" ON example_totals ("id");')
+        self.assertEqual(
+            statements[2], 'CREATE INDEX IF NOT EXISTS "example_totals_id_idx" ON "example_totals" ("id");'
+        )
 
     def test_a_plain_view_is_one_statement(self):
         """
@@ -128,9 +131,43 @@ class ViewSqlTestCase(SimpleTestCase):
         """
         definition = declare('Totals', base=MaterializedView, unique_index=('id',)).definition
 
-        self.assertEqual(definition.refresh_sql(), 'REFRESH MATERIALIZED VIEW example_totals;')
+        self.assertEqual(definition.refresh_sql(), 'REFRESH MATERIALIZED VIEW "example_totals";')
         self.assertEqual(
-            definition.refresh_sql(concurrently=True), 'REFRESH MATERIALIZED VIEW CONCURRENTLY example_totals;'
+            definition.refresh_sql(concurrently=True), 'REFRESH MATERIALIZED VIEW CONCURRENTLY "example_totals";'
+        )
+
+    def test_a_mixed_case_db_name_is_preserved_by_quoting(self):
+        """
+        Case: A pinned db_name carrying uppercase letters, in every statement a materialized view renders.
+        Expected: Quoted everywhere, so the identifier is created, dropped and refreshed case-sensitively.
+        """
+        definition = declare('Totals', base=MaterializedView, db_name='MyTotals', unique_index=('id',)).definition
+
+        self.assertTrue(definition.create_sql().startswith('CREATE MATERIALIZED VIEW "MyTotals" AS '))
+        self.assertEqual(definition.drop_sql('public'), 'DROP MATERIALIZED VIEW IF EXISTS "public"."MyTotals";')
+        self.assertEqual(definition.refresh_sql(), 'REFRESH MATERIALIZED VIEW "MyTotals";')
+
+    def test_a_pre_quoted_db_name_is_not_quoted_twice(self):
+        """
+        Case: A db_name already wrapped in quotes, which Django's quote_name accepts for db_table.
+        Expected: Passed through once, not doubled.
+        """
+        definition = declare('Uppercased', db_name='"pinned"').definition
+
+        self.assertEqual(
+            definition.create_sql(), 'CREATE OR REPLACE VIEW "pinned" AS SELECT id, name FROM example_cake;'
+        )
+
+    def test_an_index_on_a_pre_quoted_db_name_stays_one_identifier(self):
+        """
+        Case: The unique index of a materialized view whose db_name is pre-quoted.
+        Expected: The embedded quotes stay out of the index's own name, which must remain a single valid identifier.
+        """
+        definition = declare('Totals', base=MaterializedView, db_name='"Pinned"', unique_index=('id',)).definition
+
+        self.assertEqual(
+            definition.index_sql(('id',), unique=True),
+            'CREATE UNIQUE INDEX IF NOT EXISTS "Pinned_id_key" ON "Pinned" ("id");',
         )
 
 
@@ -271,7 +308,8 @@ class ViewOperationTestCase(TransactionTestCase):
         with connection.cursor() as cursor:
             for definition in self._created:
                 statement = 'DROP MATERIALIZED VIEW' if definition.materialized else 'DROP VIEW'
-                cursor.execute('{} IF EXISTS {} CASCADE;'.format(statement, definition.db_name))
+                # Quoted like the library quotes it, so a mixed-case name is cleaned up rather than missed.
+                cursor.execute('{} IF EXISTS {} CASCADE;'.format(statement, quote_name(definition.db_name)))
 
     def apply(self, operation, backwards=False):
         self._created.append(operation.definition)
@@ -346,6 +384,21 @@ class ViewOperationTestCase(TransactionTestCase):
         with connection.cursor() as cursor:
             cursor.execute('SELECT indexname FROM pg_indexes WHERE tablename = %s', ['example_totals'])
             self.assertEqual([row[0] for row in cursor.fetchall()], ['example_totals_name_key'])
+
+    def test_a_mixed_case_db_name_round_trips(self):
+        """
+        Case: Apply AddView for a view whose db_name carries uppercase letters, then reverse it.
+        Expected: The view exists under exactly that identifier and is gone afterwards. The quoting keeps the SQL in
+                  step with the generated model's quoted db_table, where the bare name would silently fold.
+        """
+        definition = self.declare_view('Totals', db_name='example_MixedCase').definition
+
+        self.apply(AddView(definition))
+        self.assertEqual(self.relkind('example_MixedCase'), 'v')
+        self.assertIsNone(self.relkind('example_mixedcase'))
+
+        self.apply(AddView(definition), backwards=True)
+        self.assertIsNone(self.relkind('example_MixedCase'))
 
     def test_a_mixed_case_index_column_is_quoted(self):
         """

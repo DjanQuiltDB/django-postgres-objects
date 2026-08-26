@@ -65,6 +65,11 @@ table names.
 PostgreSQL caps identifiers at 63 bytes, and a generated name that would exceed it is truncated. If you need a specific
 identifier (e.g. because something outside your migrations refers to it by name) pin it with ``db_name``.
 
+``db_name`` follows the quoting rules of a model's ``Meta.db_table``: the stored name stays as written, and the CREATE
+and DROP statements quote it, so an uppercase letter makes the identifier case-sensitive and an already-quoted name
+passes through as is. Keep function ``db_name``\ s lowercase, though: querysets and generated-column expressions call
+the function through Django's ``Func``, which renders the name unquoted, and Postgres folds that call to lowercase.
+
 
 Overloads
 ---------
