@@ -183,3 +183,51 @@ class InstantiationTestCase(SimpleTestCase):
             Whatever()
 
         self.assertIn('definition', str(caught.exception))
+
+
+class FunctionValidationTestCase(SimpleTestCase):
+    def declare(self, class_name, **attrs):
+        namespace = {
+            'app_label': 'example',
+            'arguments': 'input TEXT',
+            'returns': 'TEXT',
+            'body': 'BEGIN RETURN input; END;',
+        }
+        namespace.update(attrs)
+
+        return type(Function)(class_name, (Function,), namespace)
+
+    def test_a_missing_returns_refuses_to_build(self):
+        """
+        Case: A declaration that forgot returns.
+        Expected: TypeError naming the class.
+        """
+        declaration = self.declare('Forgetful', returns=None)
+
+        with self.assertRaisesMessage(TypeError, 'Forgetful'):
+            declaration.definition
+
+    def test_a_missing_body_refuses_to_build(self):
+        """
+        Case: A declaration that forgot its body.
+        Expected: TypeError naming the class.
+        """
+        declaration = self.declare('Forgetful', body=None)
+
+        with self.assertRaisesMessage(TypeError, 'Forgetful'):
+            declaration.definition
+
+    def test_a_complete_declaration_builds(self):
+        """
+        Case: A declaration carrying everything.
+        Expected: A definition, successfully.
+        """
+        self.assertEqual(self.declare('Complete').definition.returns, 'TEXT')
+
+    def test_an_abstract_declaration_keeps_its_abstract_message(self):
+        """
+        Case: The definition of an abstract declaration, which naturally has no returns or body either.
+        Expected: The abstract message.
+        """
+        with self.assertRaisesMessage(TypeError, 'Function is abstract, so it has no definition.'):
+            Function.definition

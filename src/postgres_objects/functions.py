@@ -282,10 +282,30 @@ class FunctionMeta(DeclarativeObjectMeta):
         extra.setdefault('output_field', cls.output_field)
         return Func(*expressions, function=cls.resolved_db_name, **extra)
 
-    @property
-    def definition(cls):
+    def check_declaration(cls):
+        """
+        Refuse a declaration that cannot produce working SQL, before a migration is written for it.
+
+        Without this, a forgotten returns is interpolated as the literal RETURNS None into the CREATE statement of a
+        migration makemigrations happily writes, and a forgotten body surfaces only at migrate time, as an
+        AttributeError naming nothing.
+        """
         if cls.abstract:
             raise TypeError('{} is abstract, so it has no definition.'.format(cls.__name__))
+
+        if not cls.returns:
+            raise TypeError(
+                '{} declares no returns, so there is no type for CREATE FUNCTION to return.'.format(cls.__name__)
+            )
+
+        if not cls.body:
+            raise TypeError(
+                '{} declares no body, so there is no function for CREATE FUNCTION to define.'.format(cls.__name__)
+            )
+
+    @property
+    def definition(cls):
+        cls.check_declaration()
 
         return FunctionDefinition(
             name=cls.name,

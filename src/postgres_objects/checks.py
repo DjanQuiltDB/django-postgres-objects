@@ -1,11 +1,13 @@
 """
 System checks for declarations.
 
-Two things are checked here, both of which would otherwise fail late or not at all:
+Three things are checked here, all of which would otherwise fail late or not at all:
  * A queryset-declared view can be wrong in ways raw SQL cannot: its body compiles, its model derives a primary key, and
    both happen lazily. Left to laziness alone, a mistake would surface at the first .objects access, which may be in
    production. Building everything here instead moves the failure to `manage.py check`, and therefore to runserver,
    migrate and CI.
+ * A function declaration missing its returns or body builds no working SQL, and nothing about writing the migration
+   would say so: the definition itself only fails when its CREATE statement is rendered, at migrate time.
  * A generated column declared with this package's field can be wrong without anything raising: if it resolves no
    postgres_objects.Function declaration, nothing will ever recalculate it, so it is a plain GeneratedField wearing a
    misleading name. Nothing would ever complain about that, which is exactly why it is checked.
@@ -111,6 +113,32 @@ def check_view_declarations(app_configs, **kwargs):
                     'The model for the view declaration could not be built: {}'.format(error),
                     obj=declaration,
                     id='postgres_objects.E002',
+                )
+            )
+
+    return errors
+
+
+@register('postgres_objects')
+def check_function_declarations(app_configs, **kwargs):
+    """
+    Build every function declaration's definition, reporting what (if anything) raises.
+    """
+    module_path = get_functions_module()
+    if not module_path:
+        return []
+
+    errors = []
+
+    for declaration in get_declared_objects(module_path, kind=Function).values():
+        try:
+            declaration.definition
+        except Exception as error:  # noqa: BLE001 - reported, not swallowed
+            errors.append(
+                Error(
+                    'The function declaration could not be built: {}'.format(error),
+                    obj=declaration,
+                    id='postgres_objects.E008',
                 )
             )
 

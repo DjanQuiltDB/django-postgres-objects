@@ -140,6 +140,63 @@ class ViewCheckTestCase(SimpleTestCase):
         collect.assert_not_called()
 
 
+class FunctionCheckTestCase(SimpleTestCase):
+    def run_function_checks(self, *declarations):
+        declared = {(APP_LABEL, declaration.name): declaration for declaration in declarations}
+
+        # get_recalculating_fields is emptied for the same reason as in ViewCheckTestCase: the example app's generated
+        # column has its own test case below.
+        with mock.patch('postgres_objects.checks.get_recalculating_fields', return_value=[]):
+            with mock.patch('postgres_objects.checks.get_declared_objects', return_value=declared):
+                with override_settings(POSTGRES_OBJECTS={'FUNCTIONS_MODULE_PATH': 'db_functions'}):
+                    return run_checks(tags=['postgres_objects'])
+
+    def test_a_healthy_declaration_raises_no_errors(self):
+        """
+        Case: A well-formed function declaration.
+        Expected: No errors.
+        """
+        self.assertEqual(self.run_function_checks(declare_function('AllLowercase')), [])
+
+    def test_a_missing_returns_is_an_error(self):
+        """
+        Case: A declaration that forgot returns.
+        Expected: One tagged error naming the declaration, found at check time rather than as RETURNS None in a
+                  committed migration.
+        """
+        declaration = declare_function('Forgetful', returns=None)
+
+        errors = self.run_function_checks(declaration)
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].id, 'postgres_objects.E008')
+        self.assertIs(errors[0].obj, declaration)
+
+    def test_a_missing_body_is_an_error(self):
+        """
+        Case: A declaration that forgot its body.
+        Expected: One tagged error naming the declaration, rather than an AttributeError at migrate time.
+        """
+        declaration = declare_function('Forgetful', body=None)
+
+        errors = self.run_function_checks(declaration)
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].id, 'postgres_objects.E008')
+        self.assertIs(errors[0].obj, declaration)
+
+    def test_a_broken_declaration_does_not_stop_the_next(self):
+        """
+        Case: Two broken declarations.
+        Expected: An error for each, so every declaration gets looked at.
+        """
+        errors = self.run_function_checks(
+            declare_function('Forgetful', returns=None), declare_function('AlsoForgetful', body=None)
+        )
+
+        self.assertEqual([error.id for error in errors], ['postgres_objects.E008', 'postgres_objects.E008'])
+
+
 class SettingsKeyCheckTestCase(SimpleTestCase):
     def run_settings_checks(self, options):
         # The other checks in the tag react to the module paths being unset; only the keys are under test here.
