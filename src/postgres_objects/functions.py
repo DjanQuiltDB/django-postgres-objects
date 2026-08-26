@@ -358,12 +358,25 @@ class Function(DeclarativeObject, metaclass=FunctionMeta):
 
     abstract = True
 
+    #: The argument list, verbatim, as PostgreSQL spells it. Defaults to no arguments.
     arguments = ''
+
+    #: The return type. Required on a concrete declaration.
     returns = None
+
+    #: The function body. Emitted verbatim, so a literal ``%`` needs no escaping. Required on a concrete declaration.
     body = None
+
+    #: The language the body is written in.
     language = 'plpgsql'
+
+    #: ``'VOLATILE'``, ``'STABLE'`` or ``'IMMUTABLE'``.
     volatility = 'VOLATILE'
+
+    #: Whether to emit ``STRICT``, so the function returns NULL as soon as any argument is NULL.
     strict = False
+
+    #: ``'UNSAFE'``, ``'RESTRICTED'`` or ``'SAFE'``.
     parallel = 'UNSAFE'
 
     #: Result type for annotations, so it does not have to be repeated at every call site.

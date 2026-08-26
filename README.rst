@@ -2,12 +2,34 @@
 django-postgres-objects
 =======================
 
+.. image:: https://img.shields.io/pypi/v/django-postgres-objects.svg
+    :target: https://pypi.org/project/django-postgres-objects/
+    :alt: PyPI
+
+.. image:: https://img.shields.io/pypi/pyversions/django-postgres-objects.svg
+    :target: https://pypi.org/project/django-postgres-objects/
+    :alt: Supported Python versions
+
+.. image:: https://github.com/djanquiltdb/django-postgres-objects/actions/workflows/ci.yml/badge.svg
+    :target: https://github.com/djanquiltdb/django-postgres-objects/actions/workflows/ci.yml
+    :alt: CI
+
+.. image:: https://readthedocs.org/projects/django-postgres-objects/badge/?version=latest
+    :target: https://django-postgres-objects.readthedocs.io/
+    :alt: Documentation
+
+.. image:: https://img.shields.io/pypi/l/django-postgres-objects.svg
+    :target: https://github.com/djanquiltdb/django-postgres-objects/blob/master/LICENSE
+    :alt: BSD-3-Clause licence
+
 PostgreSQL objects (i.e. non-tables) have no representation in Django's migration state, so the usual way to manage
 these in Django migrations is through hand-written ``RunSQL``. That works, but nothing notices when the declaration and
 the database drift apart, and ``makemigrations --check`` will never tell you.
 
 This package lets you declare such an object as a class, the same way a model is a class, have ``makemigrations`` write
 the operations for you, and have ``migrate`` perform the operations for you.
+
+Full documentation is at https://django-postgres-objects.readthedocs.io/.
 
 .. code-block:: python
 
@@ -99,6 +121,32 @@ depends on changes what it computes, the migration that alters the function is f
 stored values, which PostgreSQL does not do on its own. Django's plain ``GeneratedField`` works too, but its stored
 values are then left as the old body computed them.
 
+Installation
+------------
+
+::
+
+    pip install django-postgres-objects
+
+Add it to ``INSTALLED_APPS``::
+
+    INSTALLED_APPS = (
+        ...
+        'postgres_objects',
+        ...
+    )
+
+Then name the module each kind of declaration lives in, relative to each app::
+
+    POSTGRES_OBJECTS = {
+        'FUNCTIONS_MODULE_PATH': 'db_functions',
+        'VIEWS_MODULE_PATH': 'db_views',
+    }
+
+Leave one path undefined to use only the other kind. A path may be dotted, so ``'db.functions'`` works too. See the
+`installation docs <https://django-postgres-objects.readthedocs.io/en/latest/modules/installation.html>`_ for the full
+set of options, including how to coexist with a library that ships its own ``makemigrations``.
+
 Relationship to DjanQuiltDB
 ---------------------------
 
@@ -120,5 +168,5 @@ Requirements
 ------------
 
 * Python 3.14
-* Django 6.0
+* Django 6.0 or 6.1
 * PostgreSQL 17 or 18

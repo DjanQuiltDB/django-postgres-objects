@@ -19,8 +19,6 @@ settings.configure()
 
 extensions = ['sphinx.ext.autodoc', 'sphinx.ext.coverage', 'sphinx.ext.githubpages', 'sphinx_rtd_theme']
 
-templates_path = ['_templates']
-
 source_suffix = '.rst'
 
 master_doc = 'index'

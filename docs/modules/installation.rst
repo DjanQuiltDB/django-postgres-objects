@@ -75,5 +75,5 @@ Requirements
 ------------
 
 * Python 3.14
-* Django 6.0
+* Django 6.0 or 6.1
 * PostgreSQL 17 or 18

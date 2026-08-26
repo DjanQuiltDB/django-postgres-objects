@@ -18,6 +18,7 @@ The User Guide
     modules/views
     modules/migrations
     modules/queries
+    modules/api
 
 
 Indices and tables

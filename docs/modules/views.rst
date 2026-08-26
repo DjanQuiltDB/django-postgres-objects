@@ -378,4 +378,3 @@ When not explicitly provided, ``db_for_refresh()`` decides. If required, you can
         @classmethod
         def db_for_refresh(cls):
             return current_oven()
-
