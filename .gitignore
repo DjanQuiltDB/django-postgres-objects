@@ -1,0 +1,13 @@
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.tox/
+.ruff_cache/
+.coverage
+build/
+dist/
+htmlcov/
+docs/_build/
