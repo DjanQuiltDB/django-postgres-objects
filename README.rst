@@ -14,6 +14,14 @@ django-postgres-objects
     :target: https://pypi.org/project/django-postgres-objects/
     :alt: Supported Python versions
 
+.. image:: https://img.shields.io/pypi/frameworkversions/django/django-postgres-objects.svg
+    :target: https://pypi.org/project/django-postgres-objects/
+    :alt: Supported Django versions
+
+.. image:: https://img.shields.io/badge/postgres-17%20%7C%2018-4169e1?logo=postgresql&logoColor=white
+    :target: https://www.postgresql.org/
+    :alt: Supported PostgreSQL versions
+
 .. image:: https://github.com/djanquiltdb/django-postgres-objects/actions/workflows/ci.yml/badge.svg
     :target: https://github.com/djanquiltdb/django-postgres-objects/actions/workflows/ci.yml
     :alt: CI
