@@ -17,7 +17,25 @@ settings.configure()
 
 # -- General configuration ------------------------------------------------
 
-extensions = ['sphinx.ext.autodoc', 'sphinx.ext.coverage', 'sphinx.ext.githubpages', 'sphinx_rtd_theme']
+extensions = [
+    'sphinx.ext.autodoc',
+    'sphinx.ext.coverage',
+    'sphinx.ext.githubpages',
+    'sphinx_reredirects',
+    'sphinx_rtd_theme',
+]
+
+# The modules/ paths are linked from released READMEs on PyPI; each one redirects to the page that covers it. Targets
+# are relative to the redirecting page, so they work under any version prefix Read the Docs serves the build at.
+redirects = {
+    'modules/overview': '../getting_started/overview.html',
+    'modules/installation': '../getting_started/installation.html',
+    'modules/functions': '../guides/functions.html',
+    'modules/views': '../guides/views.html',
+    'modules/queries': '../guides/queries.html',
+    'modules/migrations': '../guides/migrations.html',
+    'modules/api': '../reference/api.html',
+}
 
 source_suffix = '.rst'
 

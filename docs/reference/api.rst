@@ -57,7 +57,7 @@ Autodetection
 =============
 
 Only needed when another library ships its own ``makemigrations`` or ``migrate`` command and you have to compose the two
-autodetectors by hand. See :doc:`installation` for when that applies.
+autodetectors by hand. See :doc:`/integrations/migration_libraries` for when that applies.
 
 .. currentmodule:: postgres_objects.autodetector
 

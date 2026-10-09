@@ -1,47 +1,6 @@
-============
-Installation
-============
-
-.. code-block:: shell
-
-    pip install django-postgres-objects
-
-Add it to ``INSTALLED_APPS``:
-
-.. code-block:: python
-
-    INSTALLED_APPS = (
-        ...
-        'postgres_objects',
-        ...
-    )
-
-Then name the module each kind of declaration lives in, relative to each app:
-
-.. code-block:: python
-
-    POSTGRES_OBJECTS = {
-        'FUNCTIONS_MODULE_PATH': 'db_functions',
-        'VIEWS_MODULE_PATH': 'db_views',
-    }
-
-Every app may now have a ``db_functions.py`` and a ``db_views.py``, and ``makemigrations`` will manage what it finds
-there. A path may be dotted, so ``'db.functions'`` works too if you would rather declarations lived in a package.
-
-If you want to use only one feature, you can leave the path for the other undefined. For example, if you prefer to use
-another package to handle views, and only want to use this package for functions, configure it as such:
-
-.. code-block:: python
-
-    POSTGRES_OBJECTS = {
-        'FUNCTIONS_MODULE_PATH': 'db_functions',
-    }
-
-
-
-
-Other libraries that extend the autodetector
---------------------------------------------
+=========================
+Other migration libraries
+=========================
 
 A library that layers itself onto the ``migrate``/``makemigrations`` management commands the same way this library does,
 through extending the autodetector (such as `django-pgtrigger <https://django-pgtrigger.readthedocs.io/>`_), will
@@ -69,11 +28,3 @@ composed autodetector:
 Write the same two lines for ``migrate``, against that library's ``migrate``. Both commands have to name the *same*
 object, because Django's ``commands.E001`` check refuses to start when ``makemigrations`` and ``migrate`` disagree and
 it compares them by identity.
-
-
-Requirements
-------------
-
-* Python 3.14
-* Django 6.0 or 6.1
-* PostgreSQL 17 or 18

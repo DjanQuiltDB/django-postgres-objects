@@ -6,19 +6,38 @@ and letting the Django migration framework handle changes.
 Release |version|.
 
 
-The User Guide
---------------
+.. toctree::
+    :maxdepth: 2
+    :caption: Getting started
+
+    getting_started/overview
+    getting_started/installation
 
 .. toctree::
     :maxdepth: 2
+    :caption: Guides
 
-    modules/overview
-    modules/installation
-    modules/functions
-    modules/views
-    modules/migrations
-    modules/queries
-    modules/api
+    guides/functions
+    guides/views
+    guides/generated_columns
+    guides/queries
+    guides/migrations
+
+.. toctree::
+    :maxdepth: 2
+    :caption: Integrations
+
+    integrations/migration_libraries
+    integrations/djanquiltdb
+
+.. toctree::
+    :maxdepth: 2
+    :caption: Reference
+
+    reference/settings
+    reference/checks
+    reference/api
+    reference/changelog
 
 
 Indices and tables
