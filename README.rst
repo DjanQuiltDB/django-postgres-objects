@@ -156,8 +156,10 @@ Then name the module each kind of declaration lives in, relative to each app::
     }
 
 Leave one path undefined to use only the other kind. A path may be dotted, so ``'db.functions'`` works too. See the
-`installation docs <https://django-postgres-objects.readthedocs.io/en/latest/modules/installation.html>`_ for the full
-set of options, including how to coexist with a library that ships its own ``makemigrations``.
+`settings reference <https://django-postgres-objects.readthedocs.io/en/latest/reference/settings.html>`_ for the full
+set of options, and `other migration libraries
+<https://django-postgres-objects.readthedocs.io/en/latest/integrations/migration_libraries.html>`_ for how to coexist
+with a library that ships its own ``makemigrations``.
 
 Relationship to DjanQuiltDB
 ---------------------------

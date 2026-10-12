@@ -46,13 +46,9 @@ Three more control naming rather than behaviour, and all three are optional:
 =============== ============================================================================================
 
 ``returns`` and ``body`` are required on a concrete declaration: one missing either refuses to build its definition
-with a ``TypeError`` naming the class, which is what ``makemigrations`` runs into. A system check surfaces the same
-mistake earlier still, at ``manage.py check``:
-
-============================ ==============================================================================
-``postgres_objects.E008``    The function declaration could not be built. Its ``returns`` or ``body`` is missing, or
-                             building its definition raised.
-============================ ==============================================================================
+with a ``TypeError`` naming the class, which is what ``makemigrations`` runs into. The system check
+``postgres_objects.E008`` surfaces the same mistake earlier still, at ``manage.py check``; see
+:doc:`/reference/checks`.
 
 
 Naming

@@ -146,7 +146,8 @@ listing the columns (in that case you have to specify the ``primary_key`` yourse
 
 The generated model carries plain data fields only: a foreign key column arrives as the type of the key, not a relation,
 and there are no custom managers or methods. Rows pickle by finding their way back to the declaration, so caches and
-task queues work. Mistakes will surface through system checks (``postgres_objects.E001``/``E002``).
+task queues work. Mistakes will surface through the system checks ``postgres_objects.E001`` and ``E002``; see
+:doc:`/reference/checks`.
 
 The manager is an ordinary one, so can be used to build stacked views; see `Views built on views`_.
 
@@ -246,16 +247,8 @@ Each entry is a ``View`` declaration, a model, or a table name as a string. ``de
 declaration that already automatically derives some dependencies can have more added to by declaring ``depends_on`` as
 well.
 
-Two system checks guard this wiring, alongside the ``postgres_objects.E001``/``E002`` checks on queryset declarations:
-
-============================ ==============================================================================
-``postgres_objects.E007``    The view declaration depends on something that names no relation: a ``depends_on`` entry
-                             that is not a ``View`` declaration, a model or a table name, or one naming an abstract
-                             declaration.
-``postgres_objects.W001``    The ``POSTGRES_OBJECTS`` setting contains an unknown key. A typo there fails nothing on its
-                             own (the key is simply never read) so the module it meant to name would silently not be
-                             managed at all. The hint names the closest known key.
-============================ ==============================================================================
+The system check ``postgres_objects.E007`` guards this wiring: it reports a ``depends_on`` entry that names no relation.
+See :doc:`/reference/checks`.
 
 A raw-``sql`` view without ``depends_on`` has no references at all, and will get ordered in migrations based on
 declaration order as a fallback. This may cause migration problems at migrate time (notably *not* noticeable at time of

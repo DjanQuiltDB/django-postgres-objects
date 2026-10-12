@@ -13,7 +13,7 @@ Views are the other way around: they are created *after* model migrations, and r
 view reads from tables (i.e. models), and PostgreSQL refuses to alter a column a view depends on.
 
 Within one migration the two kinds nest accordingly: view drops lead the function operations, and view creates follow
-the function removals. See :doc:`views`.
+the function removals. See :doc:`/guides/views`.
 
 Running ``makemigrations`` on an app whose model has a generated column calling the new function ``AllUppercase``
 produces two migrations. The first creates the function:
@@ -55,7 +55,7 @@ One operation is **never** generated at all: a refresh of a materialized view. S
 information about structure, not about content, there is nothing for the autodetector to act on. A view declared with
 ``with_data=False`` gets its ``AddView`` and nothing more. If you want to refresh from the migration you can manually
 add a ``RefreshMaterializedView`` operation; alternatively, call ``refresh()`` on the view from the application. See
-:doc:`views` for more information.
+:doc:`/guides/views` for more information.
 
 
 How a change is classified
@@ -78,7 +78,8 @@ before the model migrations and the ``RemoveFunction`` after them, leaving the m
 to move a dependent generated column across.
 
 If a view changed (regardless of how): views have no in-place case, so the old one is dropped before the model
-migrations and the new one created after them. :doc:`views` explains why ``CREATE OR REPLACE VIEW`` is not enough.
+migrations and the new one created after them. :doc:`/guides/views` explains why ``CREATE OR REPLACE VIEW`` is not
+enough.
 
 
 Operations
@@ -89,7 +90,7 @@ Operations
 
 ``AddView(definition, hints=None)`` and ``RemoveView(definition, hints=None)``, reversible the same way, and
 ``RefreshMaterializedView(definition, concurrently=False, hints=None)``, whose reverse deliberately does nothing (see
-:doc:`views`).
+:doc:`/guides/views`).
 
 ``RecalculateGeneratedField(model_name, name, hints=None)`` belongs to a model rather than to a declared object; see
 :ref:`recalculating-generated-columns` below.
@@ -107,9 +108,9 @@ PostgreSQL computes a stored generated column when a row is written, not when a 
 function body change, every existing row keeps whatever the old body computed; only rows written afterwards use the new
 one. Nothing about the column's definition says which rows are which.
 
-Declaring the column with ``postgres_objects.GeneratedField`` (see :doc:`queries`) solves this in the autodetector.
-Whenever a declared function the column depends on changes what it computes, the trailing object migration gets a
-recalculation:
+Declaring the column with ``postgres_objects.GeneratedField`` (see :doc:`/guides/generated_columns`) solves this in the
+autodetector. Whenever a declared function the column depends on changes what it computes, the trailing object
+migration gets a recalculation:
 
 .. code-block:: python
 
