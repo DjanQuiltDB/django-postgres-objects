@@ -203,7 +203,12 @@ line-length = 120
 extend-select = [
     # isort
     "I",
+    # docstrings and comments longer than max-doc-length
+    "W505",
 ]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 120
 
 [tool.ruff.format]
 quote-style = "single"
