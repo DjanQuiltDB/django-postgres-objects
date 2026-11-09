@@ -1,3 +1,11 @@
+v1.0.2 (2026-11-09)
+-------------------
+Added:
+ * Coverage badge in the README.
+
+Altered:
+ * Fixed the documentation badge in the README rendering as a broken image on GitHub.
+
 v1.0.1 (2026-10-12)
 -------------------
 Altered:
