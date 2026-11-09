@@ -26,9 +26,13 @@ django-postgres-objects
     :target: https://github.com/djanquiltdb/django-postgres-objects/actions/workflows/ci.yml
     :alt: CI
 
-.. image:: https://readthedocs.org/projects/django-postgres-objects/badge/?version=latest
+.. image:: https://img.shields.io/readthedocs/django-postgres-objects/latest
     :target: https://django-postgres-objects.readthedocs.io/
     :alt: Documentation
+
+.. image:: https://img.shields.io/codecov/c/github/DjanQuiltDB/django-postgres-objects/master
+    :target: https://app.codecov.io/gh/DjanQuiltDB/django-postgres-objects
+    :alt: Coverage
 
 .. image:: https://img.shields.io/pypi/l/django-postgres-objects.svg
     :target: https://github.com/djanquiltdb/django-postgres-objects/blob/master/LICENSE

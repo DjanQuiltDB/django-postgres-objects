@@ -18,12 +18,17 @@ jobs:
   test:
     name: ${{ matrix.toxenv }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The Codecov upload authenticates with a GitHub OIDC token, so the repository needs no Codecov token secret.
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - toxenv: py314-dj60-pg17
             postgres: "17"
+            codecov: true
           - toxenv: py314-dj60-pg18
             postgres: "18"
           - toxenv: py314-dj60-pgtrigger
@@ -58,6 +63,15 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: python -m pip install --upgrade pip 'tox>=4.21'
       - run: tox -e ${{ matrix.toxenv }}
+      # Only one job uploads, so that the badge shows the coverage of one run. The upload also runs when the test env
+      # fails the coverage gate, so that the badge shows the drop. The test env writes coverage.xml before it checks the
+      # gate.
+      - if: ${{ !cancelled() && matrix.codecov }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: tests/coverage.xml
+          use_oidc: true
+          fail_ci_if_error: false
 
   lint:
     name: ruff
