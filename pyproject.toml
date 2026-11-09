@@ -29,6 +29,7 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Framework :: Django",
     "Framework :: Django :: 6.0",
     "Framework :: Django :: 6.1",
@@ -83,6 +84,7 @@ postgres_objects = ["py.typed"]
 requires = ["tox>=4.21"]
 # Each Django the classifiers claim gets its own leg. A range wide enough to cover both would silently resolve to the
 # newest one and leave the older claim untested, so every dj-- factor is pinned to exactly the minor it names.
+# Python 3.15 runs on Django 6.1 only. Django 6.0 does not support Python 3.15, and Django 6.1 supports it from 6.1.3.
 env_list = [
     "py314-dj60-pg17",
     "py314-dj60-pg18",
@@ -90,6 +92,9 @@ env_list = [
     "py314-dj61-pg17",
     "py314-dj61-pg18",
     "py314-dj61-pgtrigger",
+    "py315-dj61-pg17",
+    "py315-dj61-pg18",
+    "py315-dj61-pgtrigger",
     "ruff",
     "docs",
 ]
@@ -151,6 +156,29 @@ set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "defaul
 [tool.tox.env.py314-dj61-pgtrigger]
 description = "Check that this package and django-pgtrigger share the migration commands, on Django 6.1"
 deps = ["Django>=6.1,<6.2", "django-pgtrigger>=4.17,<5"]
+commands = [
+    ["python", "manage.py", "test", "test_pgtrigger", "--noinput"],
+    ["python", "manage.py", "test", "test_pgtrigger", "--noinput", "--settings=config.settings_pgtrigger_first"],
+]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings_pgtrigger", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres17:5432/test_db}" }
+
+# The base environment sets python3.14 for the environments without a py factor, so the py315 ones set their own.
+[tool.tox.env.py315-dj61-pg17]
+description = "Run the test suite against Python 3.15, Django 6.1 and PostgreSQL 17"
+base_python = ["python3.15"]
+deps = ["Django>=6.1.3,<6.2"]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres17:5432/test_db}" }
+
+[tool.tox.env.py315-dj61-pg18]
+description = "Run the test suite against Python 3.15, Django 6.1 and PostgreSQL 18"
+base_python = ["python3.15"]
+deps = ["Django>=6.1.3,<6.2"]
+set_env = { DJANGO_SETTINGS_MODULE = "config.settings", PYTHONWARNINGS = "default", DATABASE_URL = "{env:DATABASE_URL:postgresql://postgres:postgres@postgres18:5432/test_db}" }
+
+[tool.tox.env.py315-dj61-pgtrigger]
+description = "Check that this package and django-pgtrigger share the migration commands, on Python 3.15 and Django 6.1"
+base_python = ["python3.15"]
+deps = ["Django>=6.1.3,<6.2", "django-pgtrigger>=4.17,<5"]
 commands = [
     ["python", "manage.py", "test", "test_pgtrigger", "--noinput"],
     ["python", "manage.py", "test", "test_pgtrigger", "--noinput", "--settings=config.settings_pgtrigger_first"],

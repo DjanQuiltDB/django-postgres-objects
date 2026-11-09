@@ -44,6 +44,6 @@ See :doc:`/reference/settings` for both keys. A project that also uses another l
 Requirements
 ------------
 
-* Python 3.14
+* Python 3.14 or 3.15
 * Django 6.0 or 6.1
 * PostgreSQL 17 or 18
