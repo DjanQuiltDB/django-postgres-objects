@@ -112,6 +112,9 @@ commands = [
         "--noinput",
         { replace = "posargs", extend = true, default = [] },
     ],
+    # CI uploads coverage.xml to Codecov. It is written before the report and without the gate, so that it exists when
+    # coverage is below the gate, which fails the report.
+    ["coverage", "xml", "--fail-under=0", "--rcfile={tox_root}/pyproject.toml"],
     ["coverage", "report", "--rcfile={tox_root}/pyproject.toml"],
 ]
 

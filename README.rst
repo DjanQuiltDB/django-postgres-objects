@@ -30,6 +30,10 @@ django-postgres-objects
     :target: https://django-postgres-objects.readthedocs.io/
     :alt: Documentation
 
+.. image:: https://img.shields.io/codecov/c/github/DjanQuiltDB/django-postgres-objects/master
+    :target: https://app.codecov.io/gh/DjanQuiltDB/django-postgres-objects
+    :alt: Coverage
+
 .. image:: https://img.shields.io/pypi/l/django-postgres-objects.svg
     :target: https://github.com/djanquiltdb/django-postgres-objects/blob/master/LICENSE
     :alt: BSD-3-Clause licence

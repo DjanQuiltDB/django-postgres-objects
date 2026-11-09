@@ -1,0 +1,10 @@
+# The coverage gate is fail_under in pyproject.toml, which CI enforces in the test envs. The Codecov statuses only
+# report, so that a pull request has one source of failure for coverage.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
