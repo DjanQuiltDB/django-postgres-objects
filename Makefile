@@ -62,7 +62,7 @@ build: venv
 	$(BIN)/tox -e build
 
 docker-test:
-	docker compose run --rm test
+	HOST_UID=$(shell id -u) HOST_GID=$(shell id -g) docker compose run --rm test
 
 clean:
 	rm -rf build dist docs/_build .tox .ruff_cache htmlcov .coverage
