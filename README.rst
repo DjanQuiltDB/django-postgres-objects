@@ -26,7 +26,7 @@ django-postgres-objects
     :target: https://github.com/djanquiltdb/django-postgres-objects/actions/workflows/ci.yml
     :alt: CI
 
-.. image:: https://readthedocs.org/projects/django-postgres-objects/badge/?version=latest
+.. image:: https://img.shields.io/readthedocs/django-postgres-objects/latest
     :target: https://django-postgres-objects.readthedocs.io/
     :alt: Documentation
 
