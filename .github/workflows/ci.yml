@@ -26,31 +26,49 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - toxenv: py314-dj60-pg17
-            python: "3.14"
-            postgres: "17"
-            codecov: true
+          - toxenv: py312-dj60-pg18
+            python: "3.12"
+            postgres: "18"
+          - toxenv: py312-dj60-pgtrigger
+            python: "3.12"
+            postgres: "18"
+          - toxenv: py312-dj61-pg18
+            python: "3.12"
+            postgres: "18"
+          - toxenv: py312-dj61-pgtrigger
+            python: "3.12"
+            postgres: "18"
+          - toxenv: py313-dj60-pg18
+            python: "3.13"
+            postgres: "18"
+          - toxenv: py313-dj60-pgtrigger
+            python: "3.13"
+            postgres: "18"
+          - toxenv: py313-dj61-pg18
+            python: "3.13"
+            postgres: "18"
+          - toxenv: py313-dj61-pgtrigger
+            python: "3.13"
+            postgres: "18"
           - toxenv: py314-dj60-pg18
             python: "3.14"
             postgres: "18"
           - toxenv: py314-dj60-pgtrigger
             python: "3.14"
-            postgres: "17"
-          - toxenv: py314-dj61-pg17
-            python: "3.14"
-            postgres: "17"
+            postgres: "18"
           - toxenv: py314-dj61-pg18
             python: "3.14"
             postgres: "18"
           - toxenv: py314-dj61-pgtrigger
             python: "3.14"
-            postgres: "17"
+            postgres: "18"
           - toxenv: py315-dj61-pg17
             python: "3.15"
             postgres: "17"
           - toxenv: py315-dj61-pg18
             python: "3.15"
             postgres: "18"
+            codecov: true
           - toxenv: py315-dj61-pgtrigger
             python: "3.15"
             postgres: "17"

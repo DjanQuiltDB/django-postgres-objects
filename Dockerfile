@@ -1,12 +1,14 @@
 FROM fedora:44
 
-# Fedora 44 ships Python 3.14 as python3 and Python 3.15 as python3.15, so one image runs every tox environment. The
-# postgresql package provides psql. No compiler or libpq headers are needed, because psycopg-binary ships wheels for
-# both Pythons.
+# Fedora 44 ships Python 3.14 as python3, and Python 3.12, 3.13 and 3.15 under their own names, so one image runs every
+# tox environment. The postgresql package provides psql. No compiler or libpq headers are needed, because
+# psycopg-binary ships wheels for every one of these Pythons.
 RUN dnf install -y \
     git \
     postgresql \
     python3 \
+    python3.12 \
+    python3.13 \
     python3.15 \
     && dnf clean all
 
