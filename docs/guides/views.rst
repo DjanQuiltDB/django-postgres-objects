@@ -197,6 +197,39 @@ Two consequences worth knowing:
   library).
 
 
+When a table the view reads changes
+-----------------------------------
+
+When you change a model, update every view that reads it in the same ``makemigrations`` run. The edited view is then
+dropped before the model migrations and recreated after them, as described above, so the model migrations can change
+the table freely.
+
+If a column is removed while a view that still reads it is left unchanged, ``migrate`` fails, and the view has to be
+updated to stop reading the column. A view that reads the table but not the removed column is unaffected.
+
+Deleting a whole model is the exception. Django drops tables with ``CASCADE``, so every view reading the table is
+dropped with it, without an error. Remove those views in the same run.
+
+Django 5.2
+~~~~~~~~~~
+
+**How it is implemented.** On Django 6.0 and later, the package relies on PostgreSQL refusing to drop a column a view
+reads. Django 5.2 drops columns with ``CASCADE``, so PostgreSQL would drop the view instead of refusing, and nothing
+would recreate it. To prevent that on Django 5.2, ``makemigrations`` treats every unchanged view that reads a table
+losing a column as changed. Such a view is dropped before the model migrations and recreated after them, together with
+every view built on it. A view that still reads the removed column then fails at the recreate.
+
+**What you notice.** The rule above holds on every version, but on Django 5.2:
+
+* A failed ``migrate`` stops later. The column and the view are already gone by the time the recreate fails. Fix the
+  view, then rewrite the unapplied migration that recreates it, for example by deleting it and running
+  ``makemigrations`` again.
+* Removing a column drops and recreates every declared view that reads its table, even those that do not read that
+  column. These views see the gap and lose their grants, as with any change. A materialized view declared
+  ``with_data=False`` comes back empty and needs a refresh.
+* Only the tables a view is known to read are covered. A raw-``sql`` view needs its ``depends_on`` to name them.
+
+
 Views built on views
 --------------------
 

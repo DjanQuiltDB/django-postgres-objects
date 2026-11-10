@@ -88,7 +88,8 @@ class ObjectDefinition:
     #:
     #: A function is called from a generated column's expression, so it is created before them and dropped after. A
     #: view reads from tables, so it is the inverse: created after them, and dropped before, since PostgreSQL
-    #: refuses to alter a column a view depends on.
+    #: refuses to alter a column a view depends on. Django before 6.0 drops columns with CASCADE, which PostgreSQL
+    #: does not refuse, so there the autodetector also drops and recreates every view reading a table that loses one.
     precedes_models = True
 
     #: What this kind of object is called in an operation's description.

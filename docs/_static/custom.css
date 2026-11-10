@@ -94,3 +94,15 @@
 .wy-menu-vertical li.toctree-l2.current li.toctree-l3 > a {
     background: var(--dpo-mint-deep);
 }
+
+/* The theme gives every image a bottom margin, which puts a wide gap between the lines of a wrapped badge row. The
+   margin goes on the row instead. */
+.rst-content .badges {
+    margin-bottom: 24px;
+    line-height: 0;
+}
+
+.rst-content .badges img {
+    margin: 2px 0;
+    vertical-align: middle;
+}

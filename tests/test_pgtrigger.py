@@ -1,8 +1,8 @@
 """
 Compatibility with django-pgtrigger, which extends the same two commands this package does.
 
-Only meaningful with pgtrigger installed and listed in INSTALLED_APPS, which is the py314-dj60-pgtrigger environment and
-nowhere else; the rest of the suite skips these rather than depending on the library.
+Only meaningful with pgtrigger installed and listed in INSTALLED_APPS, which is the case in the tox environments whose
+names end in -pgtrigger and nowhere else; the rest of the suite skips these rather than depending on the library.
 """
 
 from unittest import skipUnless

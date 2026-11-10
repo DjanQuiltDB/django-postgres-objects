@@ -6,6 +6,7 @@ from django.db import models
 from django.db.migrations.autodetector import MigrationAutodetector
 from django.db.migrations.exceptions import CircularDependencyError
 from django.db.migrations.graph import MigrationGraph
+from django.db.migrations.operations import AddField, RemoveField
 from django.db.migrations.state import ModelState, ProjectState
 from django.db.models import F
 from django.test import SimpleTestCase, override_settings
@@ -24,6 +25,7 @@ from postgres_objects.autodetector import (
     get_ordered_nodes,
     patch_migrations,
 )
+from postgres_objects.autodetector.changes import get_narrowed_tables
 from postgres_objects.operations import (
     AddFunction,
     AddView,
@@ -700,6 +702,171 @@ class ViewPlacementTestCase(SimpleTestCase):
         self.assertEqual(
             [operation.definition for operation in trailing['example']], [first.definition, second.definition]
         )
+
+
+class ColumnDropGuardTestCase(SimpleTestCase):
+    """
+    Where Django drops a column with CASCADE (before 6.0), PostgreSQL silently drops every view reading it, so an
+    unchanged view reading a table that loses a column is dropped and recreated around the model migrations instead.
+    """
+
+    def changes(self, declared, graph, narrowed_tables):
+        with mock.patch(
+            'postgres_objects.autodetector.changes.get_declarations',
+            return_value={(d.resolved_app_label, d.definition.kind, d.name): d for d in declared},
+        ):
+            return get_object_changes(graph, narrowed_tables=narrowed_tables)[:2]
+
+    def summary(self, side):
+        return [(type(operation), operation.definition) for operation in side['example']]
+
+    def test_an_unchanged_view_reading_a_narrowed_table_is_dropped_before_and_recreated_after(self):
+        """
+        Case: An unchanged view saying it reads a table the model migrations remove a column from.
+        Expected: The straddle a changed view takes, so the column drop cannot take the view with it, and a view still
+                  reading the column fails loudly when it is recreated.
+        """
+        declaration = declare_view('Uppercased', depends_on=['example_cake'])
+        graph = build_graph(migration_with('example', '0001', AddView(declaration.definition)))
+
+        leading, trailing = self.changes([declaration], graph, {'example_cake'})
+
+        self.assertEqual(self.summary(leading), [(RemoveView, declaration.definition)])
+        self.assertEqual(self.summary(trailing), [(AddView, declaration.definition)])
+
+    def test_an_unchanged_view_reading_another_table_produces_nothing(self):
+        """
+        Case: An unchanged view reading a table that keeps all its columns, while another table loses one.
+        Expected: Nothing happens.
+        """
+        declaration = declare_view('Uppercased', depends_on=['example_cake'])
+        graph = build_graph(migration_with('example', '0001', AddView(declaration.definition)))
+
+        self.assertEqual(self.changes([declaration], graph, {'example_baker'}), ({}, {}))
+
+    def test_without_narrowed_tables_an_unchanged_view_produces_nothing(self):
+        """
+        Case: An unchanged view reading a table, with no column removed anywhere, as on Django 6.0 and later.
+        Expected: Nothing happens.
+        """
+        declaration = declare_view('Uppercased', depends_on=['example_cake'])
+        graph = build_graph(migration_with('example', '0001', AddView(declaration.definition)))
+
+        self.assertEqual(self.changes([declaration], graph, frozenset()), ({}, {}))
+
+    def test_a_view_reading_a_guarded_view_is_guarded_too(self):
+        """
+        Case: An unchanged view reading a table that loses a column, and a second unchanged view reading the first.
+        Expected: Both straddle, the reader dropped first and created last, since a DROP VIEW has no CASCADE and would
+                  be refused while the reader still exists.
+        """
+        stacked = declare_view('Stacked', depends_on=['example_base'])
+        base = declare_view('Base', depends_on=['example_cake'])
+
+        nodes = {}
+        nodes.update(migration_with('example', '0001', AddView(base.definition)))
+        nodes.update(migration_with('example', '0002', AddView(stacked.definition), dependencies=[('example', '0001')]))
+
+        leading, trailing = self.changes([stacked, base], build_graph(nodes), {'example_cake'})
+
+        self.assertEqual(
+            [operation.definition for operation in leading['example']], [stacked.definition, base.definition]
+        )
+        self.assertEqual(
+            [operation.definition for operation in trailing['example']], [base.definition, stacked.definition]
+        )
+
+    def test_a_changed_view_reading_a_narrowed_table_straddles_once(self):
+        """
+        Case: A view whose SELECT changed, reading a table that loses a column.
+        Expected: The one straddle its change already writes, not a second pair.
+        """
+        previous = declare_view('Uppercased', depends_on=['example_cake']).definition
+        declaration = declare_view('Uppercased', sql='SELECT id, name FROM example_cake', depends_on=['example_cake'])
+        graph = build_graph(migration_with('example', '0001', AddView(previous)))
+
+        leading, trailing = self.changes([declaration], graph, {'example_cake'})
+
+        self.assertEqual(self.summary(leading), [(RemoveView, previous)])
+        self.assertEqual(self.summary(trailing), [(AddView, declaration.definition)])
+
+
+class GetNarrowedTablesTestCase(SimpleTestCase):
+    def narrowed(self, from_state, *operations):
+        return get_narrowed_tables({'example': [build_migration('example', '0002', list(operations))]}, from_state)
+
+    def test_a_removed_field_names_its_models_table(self):
+        """
+        Case: A model migration removing a field.
+        Expected: The table of the model it is removed from.
+        """
+        from_state = project_state(extra_fields=[('flavour', models.TextField())])
+
+        self.assertEqual(self.narrowed(from_state, RemoveField('GenModel', 'flavour')), {'example_genmodel'})
+
+    def test_a_custom_db_table_is_the_name_returned(self):
+        """
+        Case: The same removal from a model with its own db_table.
+        Expected: That db_table, which is what a view's references name.
+        """
+        from_state = ProjectState()
+        from_state.add_model(
+            ModelState(
+                'example',
+                'GenModel',
+                [('id', models.AutoField(primary_key=True)), ('flavour', models.TextField())],
+                options={'db_table': 'custom_table'},
+            )
+        )
+
+        self.assertEqual(self.narrowed(from_state, RemoveField('GenModel', 'flavour')), {'custom_table'})
+
+    def test_other_operations_name_nothing(self):
+        """
+        Case: A model migration adding a field and nothing else.
+        Expected: No table, since nothing loses a column.
+        """
+        self.assertEqual(self.narrowed(project_state(), AddField('GenModel', 'flavour', models.TextField())), set())
+
+
+class ColumnDropGuardDetectionTestCase(SimpleTestCase):
+    """
+    The guard as the autodetector applies it, over Django's own detection of a removed field.
+    """
+
+    def detect(self, drops_with_cascade):
+        declaration = declare_view(
+            'Flavours', sql='SELECT flavour FROM example_genmodel', depends_on=['example_genmodel']
+        )
+        graph = build_graph(migration_with('example', '0001', AddView(declaration.definition)))
+        autodetector = DeclarativeObjectAutodetector(
+            project_state(extra_fields=[('flavour', models.TextField())]), project_state()
+        )
+
+        with (
+            mock.patch('postgres_objects.autodetector.detector.DROPS_COLUMNS_WITH_CASCADE', drops_with_cascade),
+            mock.patch(
+                'postgres_objects.autodetector.changes.get_declarations',
+                return_value={('example', 'view', declaration.name): declaration},
+            ),
+        ):
+            changes = autodetector._detect_changes(graph=graph)
+
+        return [[type(operation) for operation in migration.operations] for migration in changes['example']]
+
+    def test_a_cascading_column_drop_straddles_the_view_reading_it(self):
+        """
+        Case: A field removed from a model an unchanged view reads, where Django drops columns with CASCADE.
+        Expected: The view dropped in front of the model migration and recreated behind it.
+        """
+        self.assertEqual(self.detect(True), [[RemoveView], [RemoveField], [AddView]])
+
+    def test_a_plain_column_drop_leaves_the_view_alone(self):
+        """
+        Case: The same removal where the column drop has no CASCADE, so PostgreSQL refuses it while the view reads it.
+        Expected: Only the model migration.
+        """
+        self.assertEqual(self.detect(False), [[RemoveField]])
 
 
 class UnmigratedAppWarningTestCase(SimpleTestCase):

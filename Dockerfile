@@ -1,31 +1,20 @@
-FROM ubuntu:24.04
+FROM fedora:44
 
-# Prevent interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
+# Fedora 44 ships Python 3.14 as python3, and Python 3.12, 3.13 and 3.15 under their own names, so one image runs every
+# tox environment. The postgresql package provides psql. No compiler or libpq headers are needed, because
+# psycopg-binary ships wheels for every one of these Pythons.
+RUN dnf install -y \
     git \
-    libpq-dev \
-    postgresql-client \
-    software-properties-common \
-    && rm -rf /var/lib/apt/lists/*
+    postgresql \
+    python3 \
+    python3.12 \
+    python3.13 \
+    python3.15 \
+    && dnf clean all
 
-# Install Python 3.14 from deadsnakes PPA
-RUN add-apt-repository ppa:deadsnakes/ppa -y && \
-    apt-get update && \
-    apt-get install -y \
-    python3.14 \
-    python3.14-dev \
-    python3.14-venv \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install pip for Python 3.14. It has PEP 668 protection, hence --break-system-packages.
-RUN curl https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
-    python3.14 /tmp/get-pip.py --break-system-packages && \
-    rm /tmp/get-pip.py
+# The development tools go in their own virtual environment, so that nothing is installed into the system Python.
+RUN python3.14 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
 
 WORKDIR /app
 
@@ -33,10 +22,18 @@ WORKDIR /app
 COPY pyproject.toml README.rst LICENSE ./
 COPY src ./src
 
-RUN python3.14 -m pip install --upgrade pip setuptools wheel && \
-    python3.14 -m pip install -e .[dev]
+RUN pip install --upgrade pip && \
+    pip install -e .[dev]
 
 COPY tests ./tests
 COPY docs ./docs
+
+# Compose runs the container as the host user, so that what it writes to the mounted checkout is not owned by root.
+# That user has no home directory in the image, so HOME points at /tmp, where pip and virtualenv can keep their caches.
+# Compose mounts an anonymous volume on each of these directories, and a new volume takes the owner and mode of the
+# directory in the image, so the directories are made writable by any user.
+ENV HOME=/tmp
+RUN mkdir -p .tox .venv .ruff_cache && \
+    chmod 1777 .tox .venv .ruff_cache
 
 CMD ["tox"]

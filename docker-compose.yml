@@ -4,6 +4,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: postgres-objects-test
+    # Run as the host user, so that the files written to the mounted checkout are not owned by root. `make docker-test`
+    # passes the real ids. A plain `docker compose run` falls back to 1000, the first user on most Linux systems.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
       - .:/app:z
       - /app/.ruff_cache

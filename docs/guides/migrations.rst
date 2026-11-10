@@ -10,7 +10,8 @@ migration adding a generated column can rely on the function its expression call
 nothing refers to it any more.
 
 Views are the other way around: they are created *after* model migrations, and removed *before* them. This is because a
-view reads from tables (i.e. models), and PostgreSQL refuses to alter a column a view depends on.
+view reads from tables (i.e. models), and PostgreSQL refuses to alter a column a view depends on. See
+:doc:`/guides/views` for what happens when a table a view reads changes, including how Django 5.2 differs.
 
 Within one migration the two kinds nest accordingly: view drops lead the function operations, and view creates follow
 the function removals. See :doc:`/guides/views`.
