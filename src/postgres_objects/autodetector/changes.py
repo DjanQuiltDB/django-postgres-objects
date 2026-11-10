@@ -4,6 +4,9 @@ What the migrations have created so far, what is declared right now, and the ope
 
 from collections import defaultdict, namedtuple
 
+import django
+from django.db.migrations.operations import RemoveField
+
 from postgres_objects.autodetector.ordering import get_ordered_leading, get_ordered_trailing
 from postgres_objects.autodetector.recalculation import get_recalculations
 from postgres_objects.base import Change
@@ -23,6 +26,13 @@ KINDS = (
 #: node that last created it. The node is what turns a reference to an object an earlier run created into a migration
 #: to wait for.
 MigratedObject = namedtuple('MigratedObject', ('definition', 'hints', 'node'))
+
+#: A declared view that neither the declarations nor its placement changed, with what the migrations recorded for it.
+UnchangedView = namedtuple('UnchangedView', ('app_label', 'definition', 'hints', 'previous'))
+
+#: Whether Django drops a column with CASCADE. Before 6.0 its schema editor's sql_delete_column ends in CASCADE, which
+#: makes PostgreSQL silently drop every view reading the column instead of refusing the drop. 6.0 removed the CASCADE.
+DROPS_COLUMNS_WITH_CASCADE = django.VERSION < (6, 0)
 
 
 def get_ordered_nodes(graph):
@@ -69,6 +79,43 @@ def get_migrated_objects(graph):
     return migrated
 
 
+def get_narrowed_tables(changes, from_state):
+    """
+    The tables the model migrations Django detected remove a column from.
+
+    Each table is looked up on the model as it was before the change, so a custom db_table is the identifier returned.
+    """
+    return {
+        from_state.apps.get_model(app_label, operation.model_name)._meta.db_table
+        for app_label, migrations in changes.items()
+        for migration in migrations
+        for operation in migration.operations
+        if isinstance(operation, RemoveField)
+    }
+
+
+def get_guarded_views(unchanged_views, narrowed_tables):
+    """
+    The unchanged views a column drop would take with it, as a subset of ``unchanged_views``.
+
+    A view reading a narrowed table is guarded, and so is a view reading a guarded view, since a view's DROP has no
+    CASCADE and would be refused while anything still reads it.
+    """
+    guarded = []
+    reached = set(narrowed_tables)
+    remaining = list(unchanged_views)
+
+    while True:
+        found = [view for view in remaining if reached & set(view.definition.references)]
+        if not found:
+            return guarded
+
+        for view in found:
+            remaining.remove(view)
+            guarded.append(view)
+            reached.add(view.definition.db_name)
+
+
 def get_configured_kinds():
     """
     The kinds whose settings name a module to read declarations from. A kind whose module path is unset is not managed
@@ -112,7 +159,7 @@ def sides_for(definition, leading, trailing):
     return trailing, leading
 
 
-def get_object_changes(graph, from_state=None, to_state=None):  # noqa: C901
+def get_object_changes(graph, from_state=None, to_state=None, narrowed_tables=frozenset()):  # noqa: C901
     """
     Work out the operations needed to bring the migrations in line with the declarations.
 
@@ -125,6 +172,11 @@ def get_object_changes(graph, from_state=None, to_state=None):  # noqa: C901
     the fold knows which node that was. Given the project states the autodetector compares, the trailing side also
     carries a recalculation for every stored generated column that opted in and depends on a function whose computed
     values change; without the states that part would simply be skipped.
+
+    ``narrowed_tables`` names the tables the model migrations remove a column from, where Django drops columns with
+    CASCADE. Every unchanged view reading one of them is dropped before the model migrations and recreated after them,
+    so the drop cannot silently take the view with it. If the view still reads the removed column, the recreate fails,
+    which is what the column drop itself does where it has no CASCADE.
     """
     declared = get_declarations()
     migrated = get_migrated_objects(graph)
@@ -134,6 +186,7 @@ def get_object_changes(graph, from_state=None, to_state=None):  # noqa: C901
     renamed_keys = set()
     declared_identifiers = set()
     recalculable = set()
+    unchanged_views = []
 
     leading = defaultdict(list)
     trailing = defaultdict(list)
@@ -181,6 +234,8 @@ def get_object_changes(graph, from_state=None, to_state=None):  # noqa: C901
             recalculable.add(definition.db_name.lower())
 
         if change is Change.UNCHANGED and previous_hints == hints:
+            if kind == 'view':
+                unchanged_views.append(UnchangedView(app_label, definition, hints, previous))
             continue
 
         if created_on is leading and previous.node[0] != app_label:
@@ -210,6 +265,14 @@ def get_object_changes(graph, from_state=None, to_state=None):  # noqa: C901
             dropped_on[app_label].append(definition.remove_operation_class(previous_definition, hints=previous_hints))
         else:
             created_on[app_label].append(definition.alter_operation_class(definition, previous_definition, hints=hints))
+
+    # The straddle a changed view takes, given to the unchanged views a CASCADE column drop would take with it.
+    for view in get_guarded_views(unchanged_views, narrowed_tables):
+        created_on, dropped_on = sides_for(view.definition, leading, trailing)
+        created_on[view.app_label].append(view.definition.add_operation_class(view.definition, hints=view.hints))
+        dropped_on[view.app_label].append(
+            view.definition.remove_operation_class(view.previous.definition, hints=view.previous.hints)
+        )
 
     configured = get_configured_kinds()
 

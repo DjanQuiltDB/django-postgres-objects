@@ -7,7 +7,13 @@ import warnings
 from django.db.migrations import Migration
 from django.db.migrations.autodetector import MigrationAutodetector
 
-from postgres_objects.autodetector.changes import KINDS, get_migrated_objects, get_object_changes
+from postgres_objects.autodetector.changes import (
+    DROPS_COLUMNS_WITH_CASCADE,
+    KINDS,
+    get_migrated_objects,
+    get_narrowed_tables,
+    get_object_changes,
+)
 from postgres_objects.autodetector.ordering import (
     get_create_dependencies,
     get_dependency_targets,
@@ -55,7 +61,9 @@ class DeclarativeObjectAutodetectorMixin:
         if graph is None or not any(get_module() for _, _, get_module in KINDS):
             return changes
 
-        leading, trailing, creators = get_object_changes(graph, self.from_state, self.to_state)
+        # Where a column drop would take the views reading it along, those views are dropped and recreated around it.
+        narrowed_tables = get_narrowed_tables(changes, self.from_state) if DROPS_COLUMNS_WITH_CASCADE else frozenset()
+        leading, trailing, creators = get_object_changes(graph, self.from_state, self.to_state, narrowed_tables)
 
         # arrange_for_graph deletes every change of an app it will not write an initial migration for and rewrites
         # other apps' dependencies on them to (app, '__first__'), which the loader silently discards for unmigrated

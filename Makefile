@@ -9,11 +9,12 @@ PG17 ?= postgresql://postgres:postgres@localhost:5443/test_db
 PG18 ?= postgresql://postgres:postgres@localhost:5445/test_db
 
 # The Python and Django pairs tested on each PostgreSQL. Each Django minor has its own pinned tox factor. Python 3.15
-# runs on Django 6.1 only, because Django 6.0 does not support Python 3.15. PostgreSQL 17 is tested on the newest
-# Python only. The pgtrigger checks follow the same split, so every pair in PG18_LEGS that is not also in PG17_LEGS
-# runs them against PostgreSQL 18, and the pairs in PG17_LEGS run them against PostgreSQL 17.
-PG18_LEGS ?= py312-dj60 py312-dj61 py313-dj60 py313-dj61 py314-dj60 py314-dj61 py315-dj61
-PG17_LEGS ?= py315-dj61
+# runs on Django 6.1 only, because Django 5.2 and 6.0 do not support Python 3.15. PostgreSQL 17 is tested on Django 5.2
+# with Python 3.14 and on Django 6.1 with Python 3.15, the newest Python each supports. The pgtrigger checks follow the
+# same split, so every pair in PG18_LEGS that is not also in PG17_LEGS runs them against PostgreSQL 18, and the pairs in
+# PG17_LEGS run them against PostgreSQL 17.
+PG18_LEGS ?= py312-dj52 py312-dj60 py312-dj61 py313-dj52 py313-dj60 py313-dj61 py314-dj52 py314-dj60 py314-dj61 py315-dj61
+PG17_LEGS ?= py314-dj52 py315-dj61
 
 .PHONY: help venv test test-pg17 test-pg18 test-pgtrigger lint format docs build clean databases docker-test
 
@@ -21,7 +22,7 @@ help:
 	@echo 'venv         Create $(VENV) and install the package with its dev extras'
 	@echo 'databases    Start the Postgres containers the tests need'
 	@echo 'test         Run the suite against every tested Python, Django and Postgres version, plus the pgtrigger checks'
-	@echo 'test-pg17    Run the suite against PostgreSQL 17 only, on the newest Python'
+	@echo 'test-pg17    Run the suite against PostgreSQL 17 only, on the newest Python of Django 5.2 and of 6.1'
 	@echo 'test-pg18    Run the suite against PostgreSQL 18 only, on every Python and Django'
 	@echo 'test-pgtrigger  Run the django-pgtrigger compatibility checks only, on every Python and Django'
 	@echo 'lint         Check linting and formatting'
